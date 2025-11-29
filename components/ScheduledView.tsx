@@ -1,0 +1,547 @@
+import React, { useState, useEffect } from 'react';
+import { Calendar, Clock, Search, Plus, Trash2, Edit2, Play, Pause, X, Loader2, CheckCircle, AlertCircle, Send, Users, ChevronDown } from 'lucide-react';
+import { blastApi, contactsApi } from '../services/api';
+import { Contact, Group } from '../types';
+
+interface ScheduledJob {
+  id: string;
+  message_type: 'TEXT' | 'IMAGE' | 'DOCUMENT';
+  content: string;
+  status: 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+  total_recipients: number;
+  sent_count: number;
+  failed_count: number;
+  scheduled_at: string;
+  created_at: string;
+}
+
+const ScheduledView: React.FC = () => {
+  const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedJob, setSelectedJob] = useState<ScheduledJob | null>(null);
+
+  // Create form state
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [formData, setFormData] = useState({
+    message: '',
+    scheduledDate: '',
+    scheduledTime: '',
+    audienceType: 'all' as 'all' | 'specific',
+    selectedGroupIds: new Set<string>(),
+    selectedContactIds: new Set<string>()
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadScheduledJobs();
+    loadContactsAndGroups();
+  }, []);
+
+  const loadScheduledJobs = async () => {
+    setIsLoading(true);
+    try {
+      const result = await blastApi.getScheduled();
+      if (result.success) {
+        setScheduledJobs(result.jobs);
+      }
+    } catch (err) {
+      console.error('Failed to load scheduled jobs:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadContactsAndGroups = async () => {
+    try {
+      const [contactsRes, groupsRes] = await Promise.all([
+        contactsApi.getAll(),
+        contactsApi.getGroups()
+      ]);
+      if (contactsRes.success) setContacts(contactsRes.contacts);
+      if (groupsRes.success) setGroups(groupsRes.groups);
+    } catch (err) {
+      console.error('Failed to load contacts/groups:', err);
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'scheduled':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+            <Clock size={12} /> Scheduled
+          </span>
+        );
+      case 'running':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+            <Loader2 size={12} className="animate-spin" /> Running
+          </span>
+        );
+      case 'completed':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+            <CheckCircle size={12} /> Completed
+          </span>
+        );
+      case 'failed':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+            <AlertCircle size={12} /> Failed
+          </span>
+        );
+      case 'cancelled':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+            <X size={12} /> Cancelled
+          </span>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const getRecipientCount = () => {
+    if (formData.audienceType === 'all') return contacts.length;
+    
+    const uniqueIds = new Set<string>();
+    formData.selectedGroupIds.forEach(groupId => {
+      const group = groups.find(g => g.id === groupId);
+      if (group) group.contactIds.forEach(id => uniqueIds.add(id));
+    });
+    formData.selectedContactIds.forEach(id => uniqueIds.add(id));
+    return uniqueIds.size;
+  };
+
+  const getRecipients = (): Array<{ phone: string; name: string }> => {
+    const recipientMap = new Map<string, { phone: string; name: string }>();
+    
+    if (formData.audienceType === 'all') {
+      contacts.forEach(c => recipientMap.set(c.phone, { phone: c.phone, name: c.name }));
+    } else {
+      formData.selectedGroupIds.forEach(groupId => {
+        const group = groups.find(g => g.id === groupId);
+        if (group) {
+          group.contactIds.forEach(contactId => {
+            const contact = contacts.find(c => c.id === contactId);
+            if (contact) recipientMap.set(contact.phone, { phone: contact.phone, name: contact.name });
+          });
+        }
+      });
+      formData.selectedContactIds.forEach(contactId => {
+        const contact = contacts.find(c => c.id === contactId);
+        if (contact) recipientMap.set(contact.phone, { phone: contact.phone, name: contact.name });
+      });
+    }
+    
+    return Array.from(recipientMap.values());
+  };
+
+  const handleCreateScheduled = async () => {
+    if (!formData.message.trim()) {
+      setFormError('Message is required');
+      return;
+    }
+    if (!formData.scheduledDate || !formData.scheduledTime) {
+      setFormError('Schedule date and time are required');
+      return;
+    }
+
+    const scheduledAt = new Date(`${formData.scheduledDate}T${formData.scheduledTime}`);
+    if (scheduledAt <= new Date()) {
+      setFormError('Scheduled time must be in the future');
+      return;
+    }
+
+    const recipients = getRecipients();
+    if (recipients.length === 0) {
+      setFormError('No recipients selected');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setFormError(null);
+
+    try {
+      const payload = new FormData();
+      payload.append('type', 'TEXT');
+      payload.append('content', formData.message);
+      payload.append('recipients', JSON.stringify(recipients));
+      payload.append('scheduledAt', scheduledAt.toISOString());
+      payload.append('delayMs', '3000');
+
+      const result = await blastApi.createScheduled(payload);
+      
+      if (result.success) {
+        setShowCreateModal(false);
+        setFormData({
+          message: '',
+          scheduledDate: '',
+          scheduledTime: '',
+          audienceType: 'all',
+          selectedGroupIds: new Set(),
+          selectedContactIds: new Set()
+        });
+        loadScheduledJobs();
+      } else {
+        throw new Error(result.error || 'Failed to create scheduled blast');
+      }
+    } catch (err: any) {
+      setFormError(err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCancelJob = async (jobId: string) => {
+    if (!confirm('Are you sure you want to cancel this scheduled blast?')) return;
+    
+    try {
+      await blastApi.cancelScheduled(jobId);
+      loadScheduledJobs();
+    } catch (err) {
+      console.error('Failed to cancel:', err);
+    }
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!confirm('Are you sure you want to delete this scheduled blast?')) return;
+    
+    try {
+      await blastApi.deleteJob(jobId);
+      setScheduledJobs(prev => prev.filter(j => j.id !== jobId));
+    } catch (err) {
+      console.error('Failed to delete:', err);
+    }
+  };
+
+  const filteredJobs = scheduledJobs.filter(job =>
+    job.content?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const upcomingJobs = filteredJobs.filter(j => j.status === 'scheduled');
+  const pastJobs = filteredJobs.filter(j => j.status !== 'scheduled');
+
+  // Get minimum date (today)
+  const today = new Date().toISOString().split('T')[0];
+
+  return (
+    <div className="p-4 md:p-8 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 md:mb-8 gap-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Scheduled Messages</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Schedule your broadcasts for later delivery.</p>
+        </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-medium shadow-lg shadow-emerald-600/20 transition-colors"
+        >
+          <Plus size={18} />
+          Schedule New Blast
+        </button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
+          <div className="text-2xl font-bold text-blue-600">{upcomingJobs.length}</div>
+          <div className="text-sm text-gray-500">Upcoming</div>
+        </div>
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
+          <div className="text-2xl font-bold text-emerald-600">
+            {scheduledJobs.filter(j => j.status === 'completed').length}
+          </div>
+          <div className="text-sm text-gray-500">Completed</div>
+        </div>
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
+          <div className="text-2xl font-bold text-gray-900">
+            {scheduledJobs.reduce((acc, j) => acc + j.total_recipients, 0).toLocaleString()}
+          </div>
+          <div className="text-sm text-gray-500">Total Recipients</div>
+        </div>
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
+          <div className="text-2xl font-bold text-red-600">
+            {scheduledJobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length}
+          </div>
+          <div className="text-sm text-gray-500">Failed/Cancelled</div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+        {/* Search */}
+        <div className="p-4 md:p-5 border-b border-gray-100">
+          <div className="relative max-w-md">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+            <input
+              type="text"
+              placeholder="Search scheduled messages..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+            />
+          </div>
+        </div>
+
+        {/* Content */}
+        {isLoading ? (
+          <div className="flex items-center justify-center py-20">
+            <Loader2 size={32} className="animate-spin text-emerald-600" />
+          </div>
+        ) : filteredJobs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+            <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+              <Calendar size={32} />
+            </div>
+            <p className="font-medium">No scheduled messages</p>
+            <p className="text-sm">Create your first scheduled blast</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {/* Upcoming Section */}
+            {upcomingJobs.length > 0 && (
+              <div className="p-4 md:p-6">
+                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Upcoming</h3>
+                <div className="space-y-3">
+                  {upcomingJobs.map(job => (
+                    <div key={job.id} className="flex items-center justify-between p-4 bg-blue-50 border border-blue-100 rounded-2xl group">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-2">
+                          {getStatusBadge(job.status)}
+                          <span className="text-sm text-gray-500 flex items-center gap-1">
+                            <Users size={14} />
+                            {job.total_recipients} recipients
+                          </span>
+                        </div>
+                        <p className="text-gray-800 font-medium line-clamp-1 mb-1">{job.content}</p>
+                        <p className="text-sm text-blue-600 flex items-center gap-1">
+                          <Calendar size={14} />
+                          {formatDate(job.scheduled_at)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 ml-4">
+                        <button
+                          onClick={() => handleCancelJob(job.id)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Cancel"
+                        >
+                          <X size={18} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteJob(job.id)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Past Section */}
+            {pastJobs.length > 0 && (
+              <div className="p-4 md:p-6">
+                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Past Scheduled</h3>
+                <div className="space-y-3">
+                  {pastJobs.map(job => (
+                    <div key={job.id} className="flex items-center justify-between p-4 bg-gray-50 border border-gray-100 rounded-2xl">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-2">
+                          {getStatusBadge(job.status)}
+                          <span className="text-sm text-gray-500">
+                            {job.sent_count}/{job.total_recipients} sent
+                          </span>
+                        </div>
+                        <p className="text-gray-700 line-clamp-1 mb-1">{job.content}</p>
+                        <p className="text-sm text-gray-400 flex items-center gap-1">
+                          <Calendar size={14} />
+                          {formatDate(job.scheduled_at)}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteJob(job.id)}
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors ml-4"
+                        title="Delete"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Create Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowCreateModal(false)} />
+          <div className="bg-white rounded-3xl w-full max-w-lg relative z-10 shadow-2xl max-h-[90vh] overflow-y-auto animate-[scaleIn_0.2s_ease-out]">
+            <div className="p-6 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white rounded-t-3xl">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">Schedule New Blast</h3>
+                <p className="text-sm text-gray-500">Set a time for your message to be sent</p>
+              </div>
+              <button onClick={() => setShowCreateModal(false)} className="p-2 hover:bg-gray-100 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              {formError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+                  <AlertCircle size={16} />
+                  {formError}
+                </div>
+              )}
+
+              {/* Message */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Message *</label>
+                <textarea
+                  value={formData.message}
+                  onChange={(e) => setFormData(prev => ({ ...prev, message: e.target.value }))}
+                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none h-32"
+                  placeholder="Type your message here... Use {name} for personalization"
+                />
+              </div>
+
+              {/* Schedule Date & Time */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date *</label>
+                  <input
+                    type="date"
+                    min={today}
+                    value={formData.scheduledDate}
+                    onChange={(e) => setFormData(prev => ({ ...prev, scheduledDate: e.target.value }))}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Time *</label>
+                  <input
+                    type="time"
+                    value={formData.scheduledTime}
+                    onChange={(e) => setFormData(prev => ({ ...prev, scheduledTime: e.target.value }))}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Audience */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Audience</label>
+                <div className="space-y-2">
+                  <label className={`flex items-center p-3 border rounded-xl cursor-pointer transition-all ${formData.audienceType === 'all' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                    <input
+                      type="radio"
+                      name="audience"
+                      checked={formData.audienceType === 'all'}
+                      onChange={() => setFormData(prev => ({ ...prev, audienceType: 'all' }))}
+                      className="w-4 h-4 text-emerald-600"
+                    />
+                    <div className="ml-3">
+                      <span className="font-medium text-gray-800">All Contacts</span>
+                      <span className="text-sm text-gray-500 ml-2">({contacts.length} contacts)</span>
+                    </div>
+                  </label>
+                  <label className={`flex items-center p-3 border rounded-xl cursor-pointer transition-all ${formData.audienceType === 'specific' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                    <input
+                      type="radio"
+                      name="audience"
+                      checked={formData.audienceType === 'specific'}
+                      onChange={() => setFormData(prev => ({ ...prev, audienceType: 'specific' }))}
+                      className="w-4 h-4 text-emerald-600"
+                    />
+                    <div className="ml-3">
+                      <span className="font-medium text-gray-800">Specific Groups/Contacts</span>
+                    </div>
+                  </label>
+                </div>
+
+                {formData.audienceType === 'specific' && (
+                  <div className="mt-3 p-3 bg-gray-50 rounded-xl max-h-40 overflow-y-auto">
+                    <p className="text-xs font-medium text-gray-500 mb-2">Select Groups:</p>
+                    {groups.map(group => (
+                      <label key={group.id} className="flex items-center gap-2 py-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.selectedGroupIds.has(group.id)}
+                          onChange={(e) => {
+                            const newSet = new Set(formData.selectedGroupIds);
+                            if (e.target.checked) newSet.add(group.id);
+                            else newSet.delete(group.id);
+                            setFormData(prev => ({ ...prev, selectedGroupIds: newSet }));
+                          }}
+                          className="w-4 h-4 rounded text-emerald-600"
+                        />
+                        <span className="text-sm text-gray-700">{group.name}</span>
+                        <span className="text-xs text-gray-400">({group.contactIds.length})</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Summary */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-emerald-700">Recipients:</span>
+                  <span className="font-bold text-emerald-800">{getRecipientCount()} contacts</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-gray-100 flex gap-3">
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-medium rounded-xl hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateScheduled}
+                disabled={isSubmitting}
+                className="flex-1 px-4 py-3 bg-emerald-600 text-white font-medium rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Calendar size={18} />}
+                Schedule Blast
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes scaleIn {
+          from { transform: scale(0.9); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default ScheduledView;
