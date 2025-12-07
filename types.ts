@@ -57,4 +57,4 @@ export interface DashboardStats {
   failed: number;
 }
 
-export type ViewState = 'dashboard' | 'contacts' | 'blast' | 'connection' | 'history' | 'settings' | 'files' | 'scheduled';
+export type ViewState = 'dashboard' | 'contacts' | 'blast' | 'connection' | 'history' | 'settings' | 'files' | 'scheduled' | 'chat';

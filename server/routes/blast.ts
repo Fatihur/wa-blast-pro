@@ -294,12 +294,17 @@ router.post('/:id/pause', async (req: Request, res: Response) => {
   const userId = (req as any).user.userId;
   try {
     const { id } = req.params;
-    blastQueue.pauseJob(userId, id);
+    
+    // Try to pause in memory
+    const paused = blastQueue.pauseJob(userId, id);
+    
+    // Always update database
     await blastRepository.updateJobStatus(id, 'paused');
 
     res.json({
       success: true,
-      message: 'Blast job paused'
+      message: 'Blast job paused',
+      inMemory: paused
     });
   } catch (error: any) {
     res.status(500).json({
@@ -315,7 +320,45 @@ router.post('/:id/resume', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     
-    blastQueue.resumeJob(userId, id);
+    // Check if job exists in memory
+    const existingJob = blastQueue.getJob(userId, id);
+    
+    if (existingJob) {
+      // Resume existing job
+      await blastQueue.resumeJob(userId, id);
+    } else {
+      // Job not in memory - need to reload from database and restart
+      const dbJob = await blastRepository.findJobById(id, userId);
+      if (!dbJob) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+      
+      // Get remaining recipients
+      const recipients = await blastRepository.getJobRecipients(id);
+      const pendingRecipients = recipients
+        .filter(r => r.status === 'pending')
+        .map(r => ({ phone: r.phone, name: r.name }));
+      
+      if (pendingRecipients.length === 0) {
+        return res.status(400).json({ success: false, error: 'No pending recipients to send' });
+      }
+      
+      // Create new job in memory with remaining recipients
+      const payload = {
+        type: dbJob.message_type,
+        content: dbJob.content || '',
+        recipients: pendingRecipients,
+        delayMs: dbJob.delay_ms || 3000,
+        mediaPath: dbJob.media_path,
+        mediaName: dbJob.media_name
+      };
+      
+      blastQueue.createJob(userId, payload, id);
+      blastQueue.startJob(userId, id).catch(err => {
+        console.error(`[Resume] Failed to start job ${id}:`, err.message);
+      });
+    }
+    
     await blastRepository.updateJobStatus(id, 'running');
 
     res.json({
@@ -359,17 +402,22 @@ router.post('/:id/cancel-schedule', async (req: Request, res: Response) => {
   }
 });
 
-// Cancel job
+// Cancel job (running or paused)
 router.post('/:id/cancel', async (req: Request, res: Response) => {
   const userId = (req as any).user.userId;
   try {
     const { id } = req.params;
-    blastQueue.cancelJob(userId, id);
-    await blastRepository.updateJobStatus(id, 'failed');
+    
+    // Try to cancel in memory (will abort if running)
+    const cancelled = blastQueue.cancelJob(userId, id);
+    
+    // Always update database to cancelled status
+    await blastRepository.updateJobStatus(id, 'cancelled');
 
     res.json({
       success: true,
-      message: 'Blast job cancelled'
+      message: 'Blast job cancelled',
+      inMemory: cancelled
     });
   } catch (error: any) {
     res.status(500).json({

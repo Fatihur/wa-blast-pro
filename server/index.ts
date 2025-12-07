@@ -10,6 +10,9 @@ import whatsappRoutes from './routes/whatsapp.js';
 import contactsRoutes from './routes/contacts.js';
 import blastRoutes from './routes/blast.js';
 import authRoutes from './routes/auth.js';
+import settingsRoutes from './routes/settings.js';
+import headerRoutes, { saveInboxMessage, createNotification } from './routes/header.js';
+import chatRoutes from './routes/chat.js';
 import { ConnectionStatus } from './types.js';
 import { testConnection } from './config/database.js';
 import { authService } from './services/authService.js';
@@ -40,6 +43,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/contacts', contactsRoutes);
 app.use('/api/blast', blastRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/header', headerRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -110,6 +116,64 @@ whatsappSessionManager.on('auth_failure', (userId: string, msg: string) => {
 
 whatsappSessionManager.on('disconnected', (userId: string, reason: string) => {
   io.to(`user:${userId}`).emit('whatsapp_disconnected', { reason });
+  
+  // Create notification for disconnection
+  createNotification(
+    userId,
+    'session_disconnected',
+    'WhatsApp Terputus',
+    `Sesi WhatsApp terputus: ${reason}`,
+    { reason }
+  ).catch(() => {});
+});
+
+// Handle incoming WhatsApp messages
+whatsappSessionManager.on('message', async (userId: string, message: any) => {
+  try {
+    // Only save non-self messages (incoming messages)
+    if (!message.fromMe) {
+      const fromPhone = message.from.replace('@c.us', '');
+      // Use notifyName from message directly (avoid getContact() API compatibility issues)
+      const fromName = message._data?.notifyName || message.notifyName || fromPhone;
+      
+      let messageType = 'TEXT';
+      let content = message.body || '';
+      let mediaUrl: string | undefined = undefined;
+
+      if (message.hasMedia) {
+        try {
+          const media = await message.downloadMedia();
+          if (media) {
+            messageType = message.type?.toUpperCase() || 'OTHER';
+            if (!content) content = `[${messageType}]`;
+          }
+        } catch {
+          messageType = message.type?.toUpperCase() || 'OTHER';
+          if (!content) content = `[${messageType}]`;
+        }
+      }
+
+      await saveInboxMessage(
+        userId,
+        fromPhone,
+        fromName,
+        messageType,
+        content,
+        mediaUrl
+      );
+
+      // Emit to frontend for real-time update
+      io.to(`user:${userId}`).emit('new_inbox_message', {
+        from_phone: fromPhone,
+        from_name: fromName,
+        content,
+        message_type: messageType
+      });
+    }
+  } catch (error) {
+    // Silent fail - don't spam logs for every message
+    console.error(`[${userId}] Inbox error:`, (error as Error).message?.substring(0, 50));
+  }
 });
 
 // Blast Queue events - emit to user-specific rooms

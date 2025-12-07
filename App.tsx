@@ -9,6 +9,7 @@ import FileManagerView from './components/FileManagerView';
 import HistoryView from './components/HistoryView';
 import SettingsView from './components/SettingsView';
 import ScheduledView from './components/ScheduledView';
+import ChatView from './components/ChatView';
 import LoginView from './components/LoginView';
 import RegisterView from './components/RegisterView';
 import ForgotPasswordView from './components/ForgotPasswordView';
@@ -177,6 +178,8 @@ const App: React.FC = () => {
         return <HistoryView />;
       case 'settings':
         return <SettingsView />;
+      case 'chat':
+        return <ChatView />;
       default:
         return <DashboardView />;
     }

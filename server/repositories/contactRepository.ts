@@ -49,6 +49,46 @@ export const contactRepository = {
     }));
   },
 
+  async findPaginated(
+    userId: string, 
+    page: number = 1, 
+    limit: number = 20, 
+    search?: string
+  ): Promise<{ contacts: Contact[]; total: number; page: number; limit: number; totalPages: number }> {
+    const offset = (page - 1) * limit;
+    
+    let countQuery = 'SELECT COUNT(*) as total FROM contacts WHERE user_id = ?';
+    let dataQuery = 'SELECT * FROM contacts WHERE user_id = ?';
+    const params: any[] = [userId];
+    
+    if (search && search.trim()) {
+      const searchPattern = `%${search.trim()}%`;
+      countQuery += ' AND (name LIKE ? OR phone LIKE ?)';
+      dataQuery += ' AND (name LIKE ? OR phone LIKE ?)';
+      params.push(searchPattern, searchPattern);
+    }
+    
+    dataQuery += ' ORDER BY name ASC LIMIT ? OFFSET ?';
+    
+    const [countResult] = await pool.query<RowDataPacket[]>(countQuery, params);
+    const total = countResult[0].total;
+    
+    const [rows] = await pool.query<ContactRow[]>(dataQuery, [...params, limit, offset]);
+    
+    const contacts = rows.map(row => ({
+      ...row,
+      tags: parseTags(row.tags)
+    }));
+
+    return {
+      contacts,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
+  },
+
   async findById(id: string, userId: string): Promise<Contact | null> {
     const [rows] = await pool.query<ContactRow[]>(
       'SELECT * FROM contacts WHERE id = ? AND user_id = ?',

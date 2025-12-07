@@ -212,16 +212,32 @@ class WhatsAppClientService extends EventEmitter {
         const isGroup = (chat as any).isGroup;
         
         if (!isGroup) {
-          // Individual chat - extract contact info
-          const contact = await chat.getContact();
-          const phone = (contact as any).number || chatId.replace('@c.us', '');
+          // Individual chat - extract contact info directly from chat
+          const phone = chatId.replace('@c.us', '');
+          
+          // Try multiple sources for the contact name
+          const chatData = (chat as any)._data || {};
+          const contactName = 
+            chatData.name ||
+            chatData.pushname ||
+            chatData.notifyName ||
+            chatData.verifiedName ||
+            chatData.formattedTitle ||
+            (chat as any).name ||
+            (chat as any).formattedTitle ||
+            '';
+          
+          // Don't use phone number as name
+          const displayName = (contactName && contactName !== phone && !contactName.startsWith('+')) 
+            ? contactName 
+            : '';
           
           if (!contactsMap.has(chatId)) {
             contactsMap.set(chatId, {
               id: chatId,
-              name: (contact as any).name || (contact as any).pushname || phone || 'Unknown',
+              name: displayName || phone || 'Unknown',
               phone: phone,
-              pushname: (contact as any).pushname,
+              pushname: chatData.pushname || chatData.notifyName || '',
               isGroup: false
             });
           }

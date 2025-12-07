@@ -28,4 +28,5 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
+export { pool };
 export default pool;

@@ -24,7 +24,7 @@ const BlastView: React.FC = () => {
   // Message State
   const [message, setMessage] = useState('');
   const [topic, setTopic] = useState('');
-  const [tone, setTone] = useState('Friendly');
+  const [tone, setTone] = useState('Ramah');
   const [isGenerating, setIsGenerating] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [messageType, setMessageType] = useState<MessageType>(MessageType.TEXT);
@@ -788,9 +788,9 @@ const BlastView: React.FC = () => {
                            <div>
                                <h4 className="text-indigo-900 font-bold flex items-center gap-2">
                                    <Sparkles size={18} className="text-indigo-600" />
-                                   AI Writing Assistant
+                                   Asisten Penulis AI
                                </h4>
-                               <p className="text-xs text-indigo-600/70 mt-1 font-medium">Input a topic and let AI draft the message for you.</p>
+                               <p className="text-xs text-indigo-600/70 mt-1 font-medium">Masukkan topik dan biarkan AI membuatkan pesan yang humanis untuk Anda.</p>
                            </div>
                        </div>
 
@@ -800,7 +800,7 @@ const BlastView: React.FC = () => {
                                <input
                                    type="text"
                                    className="w-full h-11 px-4 rounded-xl border-0 ring-1 ring-indigo-200 focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm placeholder:text-indigo-300/70 text-sm transition-all"
-                                   placeholder="e.g., 50% off Flash Sale for loyal customers"
+                                   placeholder="cth: Promo diskon 50% untuk pelanggan setia"
                                    value={topic}
                                    onChange={(e) => setTopic(e.target.value)}
                                />
@@ -812,10 +812,12 @@ const BlastView: React.FC = () => {
                                        value={tone}
                                        onChange={(e) => setTone(e.target.value)}
                                    >
-                                       <option>Friendly</option>
-                                       <option>Professional</option>
-                                       <option>Urgent</option>
-                                       <option>Fun</option>
+                                       <option>Ramah</option>
+                                       <option>Profesional</option>
+                                       <option>Santai</option>
+                                       <option>Mendesak</option>
+                                       <option>Persuasif</option>
+                                       <option>Informatif</option>
                                    </select>
                                    <ChevronDown size={16} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-indigo-400 pointer-events-none" />
                                </div>
@@ -826,7 +828,7 @@ const BlastView: React.FC = () => {
                                    className="h-11 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-600/20 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed disabled:shadow-none whitespace-nowrap"
                                >
                                    {isGenerating ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                                   <span>{isGenerating ? 'Thinking...' : 'Generate'}</span>
+                                   <span>{isGenerating ? 'Menulis...' : 'Buat Pesan'}</span>
                                </button>
                            </div>
                        </div>

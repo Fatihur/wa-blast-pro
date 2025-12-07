@@ -13,12 +13,25 @@ router.use(authMiddleware);
 // SPECIFIC ROUTES (must be before /:id routes)
 // ============================================
 
-// Get all contacts from database
+// Get all contacts from database (with pagination support)
 router.get('/', async (req: Request, res: Response) => {
   const userId = (req as any).user.userId;
   try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const search = req.query.search as string || '';
+    const paginated = req.query.paginated === 'true';
+
+    if (paginated) {
+      const result = await contactRepository.findPaginated(userId, page, limit, search);
+      return res.json({
+        success: true,
+        ...result
+      });
+    }
+
+    // Legacy: return all contacts without pagination
     const contacts = await contactRepository.findAll(userId);
-    
     res.json({
       success: true,
       count: contacts.length,
@@ -32,17 +45,180 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// Get contacts from WhatsApp (for syncing)
+// Get contacts from WhatsApp (for syncing) - detailed info
 router.get('/whatsapp', async (req: Request, res: Response) => {
   const userId = (req as any).user.userId;
   try {
-    const contacts = await whatsappSessionManager.getContacts(userId);
-    const filteredContacts = contacts.filter(c => !c.isGroup && c.phone);
+    const contacts = await whatsappSessionManager.getAllContacts(userId);
+    const filteredContacts = contacts.filter(c => !c.isGroup && c.number);
     
     res.json({
       success: true,
       count: filteredContacts.length,
       contacts: filteredContacts
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get single WhatsApp contact by ID
+router.get('/whatsapp/:contactId', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const contact = await whatsappSessionManager.getContactById(userId, contactId);
+    res.json({
+      success: true,
+      contact
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get contact profile picture URL
+router.get('/whatsapp/:contactId/profile-pic', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const profilePicUrl = await whatsappSessionManager.getContactProfilePicUrl(userId, contactId);
+    res.json({
+      success: true,
+      profilePicUrl
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get contact about/status
+router.get('/whatsapp/:contactId/about', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const about = await whatsappSessionManager.getContactAbout(userId, contactId);
+    res.json({
+      success: true,
+      about
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get contact formatted number
+router.get('/whatsapp/:contactId/formatted-number', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const formattedNumber = await whatsappSessionManager.getContactFormattedNumber(userId, contactId);
+    res.json({
+      success: true,
+      formattedNumber
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get contact country code
+router.get('/whatsapp/:contactId/country-code', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const countryCode = await whatsappSessionManager.getContactCountryCode(userId, contactId);
+    res.json({
+      success: true,
+      countryCode
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get common groups with contact
+router.get('/whatsapp/:contactId/common-groups', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const groups = await whatsappSessionManager.getContactCommonGroups(userId, contactId);
+    res.json({
+      success: true,
+      count: groups.length,
+      groups
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Block contact
+router.post('/whatsapp/:contactId/block', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const result = await whatsappSessionManager.blockContact(userId, contactId);
+    res.json({
+      success: true,
+      blocked: result
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Unblock contact
+router.post('/whatsapp/:contactId/unblock', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const { contactId } = req.params;
+    const result = await whatsappSessionManager.unblockContact(userId, contactId);
+    res.json({
+      success: true,
+      unblocked: result
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get blocked contacts
+router.get('/whatsapp-blocked', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
+  try {
+    const contacts = await whatsappSessionManager.getBlockedContacts(userId);
+    res.json({
+      success: true,
+      count: contacts.length,
+      contacts
     });
   } catch (error: any) {
     res.status(500).json({

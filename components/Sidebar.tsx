@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LayoutDashboard, Users, Send, Smartphone, History, Settings, LogOut, Zap, X, FolderOpen, Calendar } from 'lucide-react';
+import { LayoutDashboard, Users, Send, Smartphone, History, Settings, LogOut, Zap, X, FolderOpen, Calendar, MessageCircle } from 'lucide-react';
 import { ViewState } from '../types';
 
 interface SidebarProps {
@@ -18,6 +18,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, onLogout, 
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'connection', label: 'Device Connect', icon: Smartphone },
     { id: 'contacts', label: 'Contacts', icon: Users },
+    { id: 'chat', label: 'Chat', icon: MessageCircle },
     { id: 'blast', label: 'Send Blast', icon: Send },
     { id: 'scheduled', label: 'Scheduled', icon: Calendar },
     { id: 'files', label: 'File Manager', icon: FolderOpen },

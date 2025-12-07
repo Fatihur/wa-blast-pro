@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { History, Search, Calendar, CheckCircle, XCircle, Clock, Loader2, Send, Trash2, Eye, X, ChevronDown, Filter } from 'lucide-react';
+import { History, Search, Calendar, CheckCircle, XCircle, Clock, Loader2, Send, Trash2, Eye, X, ChevronDown, Filter, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { blastApi } from '../services/api';
+import ConfirmModal from './ConfirmModal';
 
 interface BlastJob {
   id: string;
@@ -21,6 +22,27 @@ const HistoryView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedJob, setSelectedJob] = useState<BlastJob | null>(null);
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+
+  // Confirmation modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  });
+
+  const closeConfirmModal = () => {
+    setConfirmModal(prev => ({ ...prev, isOpen: false }));
+  };
 
   useEffect(() => {
     loadHistory();
@@ -104,16 +126,63 @@ const HistoryView: React.FC = () => {
     return matchesSearch && matchesStatus;
   });
 
-  const handleDelete = async (jobId: string) => {
-    if (!confirm('Are you sure you want to delete this blast history?')) return;
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredJobs.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
+
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter]);
+
+  const goToPage = (page: number) => {
+    setCurrentPage(Math.max(1, Math.min(page, totalPages)));
+  };
+
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    const maxVisiblePages = 5;
     
-    try {
-      await blastApi.deleteJob(jobId);
-      setJobs(prev => prev.filter(j => j.id !== jobId));
-      if (selectedJob?.id === jobId) setSelectedJob(null);
-    } catch (err) {
-      console.error('Failed to delete:', err);
+    if (totalPages <= maxVisiblePages) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      if (currentPage <= 3) {
+        for (let i = 1; i <= 4; i++) pages.push(i);
+        pages.push('...');
+        pages.push(totalPages);
+      } else if (currentPage >= totalPages - 2) {
+        pages.push(1);
+        pages.push('...');
+        for (let i = totalPages - 3; i <= totalPages; i++) pages.push(i);
+      } else {
+        pages.push(1);
+        pages.push('...');
+        for (let i = currentPage - 1; i <= currentPage + 1; i++) pages.push(i);
+        pages.push('...');
+        pages.push(totalPages);
+      }
     }
+    return pages;
+  };
+
+  const handleDelete = (jobId: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Delete Blast History?',
+      message: 'This will permanently delete this blast record from history. This action cannot be undone.',
+      onConfirm: async () => {
+        closeConfirmModal();
+        try {
+          await blastApi.deleteJob(jobId);
+          setJobs(prev => prev.filter(j => j.id !== jobId));
+          if (selectedJob?.id === jobId) setSelectedJob(null);
+        } catch (err) {
+          console.error('Failed to delete:', err);
+        }
+      }
+    });
   };
 
   return (
@@ -217,7 +286,7 @@ const HistoryView: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {filteredJobs.map((job) => {
+                {paginatedJobs.map((job) => {
                   const successRate = job.total_recipients > 0 
                     ? Math.round((job.sent_count / job.total_recipients) * 100) 
                     : 0;
@@ -286,6 +355,93 @@ const HistoryView: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {!isLoading && filteredJobs.length > 0 && (
+          <div className="px-6 py-4 border-t border-gray-100 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* Info */}
+            <div className="text-sm text-gray-500">
+              Menampilkan <span className="font-medium text-gray-700">{startIndex + 1}</span> - <span className="font-medium text-gray-700">{Math.min(endIndex, filteredJobs.length)}</span> dari <span className="font-medium text-gray-700">{filteredJobs.length}</span> data
+            </div>
+
+            {/* Controls */}
+            <div className="flex items-center gap-2">
+              {/* Items per page */}
+              <div className="flex items-center gap-2 mr-4">
+                <span className="text-sm text-gray-500">Per halaman:</span>
+                <select
+                  value={itemsPerPage}
+                  onChange={(e) => {
+                    setItemsPerPage(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                >
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
+
+              {/* Navigation buttons */}
+              <button
+                onClick={() => goToPage(1)}
+                disabled={currentPage === 1}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Halaman pertama"
+              >
+                <ChevronsLeft size={18} />
+              </button>
+              <button
+                onClick={() => goToPage(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Sebelumnya"
+              >
+                <ChevronLeft size={18} />
+              </button>
+
+              {/* Page numbers */}
+              <div className="flex items-center gap-1">
+                {getPageNumbers().map((page, index) => (
+                  typeof page === 'number' ? (
+                    <button
+                      key={index}
+                      onClick={() => goToPage(page)}
+                      className={`min-w-[36px] h-9 px-3 text-sm font-medium rounded-lg transition-colors ${
+                        currentPage === page
+                          ? 'bg-emerald-600 text-white'
+                          : 'text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      {page}
+                    </button>
+                  ) : (
+                    <span key={index} className="px-2 text-gray-400">...</span>
+                  )
+                ))}
+              </div>
+
+              <button
+                onClick={() => goToPage(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Selanjutnya"
+              >
+                <ChevronRight size={18} />
+              </button>
+              <button
+                onClick={() => goToPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Halaman terakhir"
+              >
+                <ChevronsRight size={18} />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -357,6 +513,17 @@ const HistoryView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        variant="danger"
+        confirmText="Delete"
+        onConfirm={confirmModal.onConfirm}
+        onCancel={closeConfirmModal}
+      />
 
       <style>{`
         @keyframes scaleIn {

@@ -127,6 +127,31 @@ export const authApi = {
     }),
 };
 
+export const settingsApi = {
+  getAll: () =>
+    request<{ success: boolean; settings: Record<string, string> }>('/settings'),
+
+  get: (key: string) =>
+    request<{ success: boolean; value: string | null }>(`/settings/${key}`),
+
+  save: (key: string, value: string) =>
+    request<{ success: boolean; message?: string }>('/settings', {
+      method: 'POST',
+      body: JSON.stringify({ key, value }),
+    }),
+
+  saveBulk: (settings: Record<string, string>) =>
+    request<{ success: boolean; message?: string }>('/settings/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ settings }),
+    }),
+
+  delete: (key: string) =>
+    request<{ success: boolean; message?: string }>(`/settings/${key}`, {
+      method: 'DELETE',
+    }),
+};
+
 export const whatsappApi = {
   getStatus: () => request<{
     status: string;
@@ -223,11 +248,36 @@ export interface Contact {
   tags: string[];
 }
 
+export interface WhatsAppContact {
+  id: string;
+  number: string;
+  name: string | null;
+  pushname: string;
+  shortName: string | null;
+  isBlocked: boolean;
+  isBusiness: boolean;
+  isEnterprise: boolean;
+  isGroup: boolean;
+  isMe: boolean;
+  isMyContact: boolean;
+  isUser: boolean;
+  isWAContact: boolean;
+}
+
 export interface Group {
   id: string;
   name: string;
   description?: string;
   contactIds: string[];
+}
+
+export interface PaginatedResponse<T> {
+  success: boolean;
+  contacts: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 }
 
 export const contactsApi = {
@@ -238,18 +288,74 @@ export const contactsApi = {
     contacts: Contact[];
   }>('/contacts'),
 
-  // Get contacts from WhatsApp (for syncing)
+  // Get contacts with pagination
+  getPaginated: (page: number = 1, limit: number = 20, search: string = '') =>
+    request<PaginatedResponse<Contact>>(
+      `/contacts?paginated=true&page=${page}&limit=${limit}&search=${encodeURIComponent(search)}`
+    ),
+
+  // Get contacts from WhatsApp (for syncing) - detailed info
   getFromWhatsApp: () => request<{
     success: boolean;
     count: number;
-    contacts: Array<{
-      id: string;
-      name: string;
-      phone: string;
-      pushname?: string;
-      isGroup: boolean;
-    }>;
+    contacts: Array<WhatsAppContact>;
   }>('/contacts/whatsapp'),
+
+  // Get single WhatsApp contact by ID
+  getWhatsAppContact: (contactId: string) => request<{
+    success: boolean;
+    contact: WhatsAppContact;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}`),
+
+  // Get contact profile picture URL
+  getContactProfilePic: (contactId: string) => request<{
+    success: boolean;
+    profilePicUrl: string | null;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/profile-pic`),
+
+  // Get contact about/status
+  getContactAbout: (contactId: string) => request<{
+    success: boolean;
+    about: string | null;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/about`),
+
+  // Get contact formatted number
+  getContactFormattedNumber: (contactId: string) => request<{
+    success: boolean;
+    formattedNumber: string;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/formatted-number`),
+
+  // Get contact country code
+  getContactCountryCode: (contactId: string) => request<{
+    success: boolean;
+    countryCode: string;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/country-code`),
+
+  // Get common groups with contact
+  getContactCommonGroups: (contactId: string) => request<{
+    success: boolean;
+    count: number;
+    groups: string[];
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/common-groups`),
+
+  // Block contact
+  blockContact: (contactId: string) => request<{
+    success: boolean;
+    blocked: boolean;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/block`, { method: 'POST' }),
+
+  // Unblock contact
+  unblockContact: (contactId: string) => request<{
+    success: boolean;
+    unblocked: boolean;
+  }>(`/contacts/whatsapp/${encodeURIComponent(contactId)}/unblock`, { method: 'POST' }),
+
+  // Get blocked contacts
+  getBlockedContacts: () => request<{
+    success: boolean;
+    count: number;
+    contacts: Array<{ id: string; number: string; name: string; pushname: string }>;
+  }>('/contacts/whatsapp-blocked'),
 
   // Create contact
   create: (contact: { name: string; phone: string; tags?: string[] }) =>
@@ -461,4 +567,193 @@ export const healthApi = {
     whatsapp: string;
     timestamp: string;
   }>('/health'),
+};
+
+// ==================== CHAT API ====================
+
+export interface ChatInfo {
+  id: string;
+  name: string;
+  isGroup: boolean;
+  isReadOnly: boolean;
+  unreadCount: number;
+  timestamp: number;
+  archived: boolean;
+  pinned: boolean;
+  isMuted: boolean;
+  muteExpiration: number;
+  lastMessage?: {
+    body: string;
+    timestamp: number;
+    fromMe: boolean;
+  };
+}
+
+export interface ChatMessage {
+  id: string;
+  body: string;
+  type: string;
+  timestamp: number;
+  fromMe: boolean;
+  from: string;
+  to: string;
+  hasMedia: boolean;
+  isForwarded: boolean;
+  isStarred: boolean;
+}
+
+export interface ChatContact {
+  id: string;
+  name: string;
+  number: string;
+  pushname: string;
+  isGroup: boolean;
+  isWAContact: boolean;
+}
+
+export const chatApi = {
+  getAll: () =>
+    request<{ success: boolean; count: number; chats: ChatInfo[] }>('/chat'),
+
+  getById: (chatId: string) =>
+    request<{ success: boolean; chat: ChatInfo }>(`/chat/${encodeURIComponent(chatId)}`),
+
+  fetchMessages: (chatId: string, limit: number = 50, fromMe?: boolean) => {
+    let url = `/chat/${encodeURIComponent(chatId)}/messages?limit=${limit}`;
+    if (fromMe !== undefined) url += `&fromMe=${fromMe}`;
+    return request<{ success: boolean; count: number; messages: ChatMessage[] }>(url);
+  },
+
+  sendMessage: (chatId: string, content: string, options?: any) =>
+    request<{ success: boolean; messageId: string; timestamp: number }>(`/chat/${encodeURIComponent(chatId)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ content, options }),
+    }),
+
+  sendSeen: (chatId: string) =>
+    request<{ success: boolean; result: boolean }>(`/chat/${encodeURIComponent(chatId)}/seen`, { method: 'POST' }),
+
+  archive: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/archive`, { method: 'POST' }),
+
+  unarchive: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/unarchive`, { method: 'POST' }),
+
+  pin: (chatId: string) =>
+    request<{ success: boolean; pinned: boolean }>(`/chat/${encodeURIComponent(chatId)}/pin`, { method: 'POST' }),
+
+  unpin: (chatId: string) =>
+    request<{ success: boolean; pinned: boolean }>(`/chat/${encodeURIComponent(chatId)}/unpin`, { method: 'POST' }),
+
+  mute: (chatId: string, unmuteDate?: string) =>
+    request<{ success: boolean; isMuted: boolean; muteExpiration: number }>(`/chat/${encodeURIComponent(chatId)}/mute`, {
+      method: 'POST',
+      body: JSON.stringify({ unmuteDate }),
+    }),
+
+  unmute: (chatId: string) =>
+    request<{ success: boolean; isMuted: boolean; muteExpiration: number }>(`/chat/${encodeURIComponent(chatId)}/unmute`, { method: 'POST' }),
+
+  markUnread: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/mark-unread`, { method: 'POST' }),
+
+  clearMessages: (chatId: string) =>
+    request<{ success: boolean; result: boolean }>(`/chat/${encodeURIComponent(chatId)}/clear`, { method: 'POST' }),
+
+  delete: (chatId: string) =>
+    request<{ success: boolean; result: boolean }>(`/chat/${encodeURIComponent(chatId)}`, { method: 'DELETE' }),
+
+  getContact: (chatId: string) =>
+    request<{ success: boolean; contact: ChatContact }>(`/chat/${encodeURIComponent(chatId)}/contact`),
+
+  sendTyping: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/typing`, { method: 'POST' }),
+
+  sendRecording: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/recording`, { method: 'POST' }),
+
+  clearState: (chatId: string) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/clear-state`, { method: 'POST' }),
+
+  getPinnedMessages: (chatId: string) =>
+    request<{ success: boolean; messages: ChatMessage[] }>(`/chat/${encodeURIComponent(chatId)}/pinned-messages`),
+
+  getLabels: (chatId: string) =>
+    request<{ success: boolean; labels: any[] }>(`/chat/${encodeURIComponent(chatId)}/labels`),
+
+  changeLabels: (chatId: string, labelIds: (string | number)[]) =>
+    request<{ success: boolean }>(`/chat/${encodeURIComponent(chatId)}/labels`, {
+      method: 'POST',
+      body: JSON.stringify({ labelIds }),
+    }),
+};
+
+// ==================== HEADER FEATURES API ====================
+
+export interface SearchResult {
+  contacts: Array<{ id: string; name: string; phone: string; tags: string[] }>;
+  history: Array<{ id: string; content: string; message_type: string; status: string; total_recipients: number; created_at: string }>;
+  templates: Array<{ id: string; name: string; content: string; message_type: string }>;
+}
+
+export interface Notification {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  data: any;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface InboxMessage {
+  id: string;
+  from_phone: string;
+  from_name: string;
+  message_type: string;
+  content: string;
+  media_url?: string;
+  is_read: boolean;
+  received_at: string;
+}
+
+export const headerApi = {
+  // Search
+  search: (query: string, category?: 'contacts' | 'history' | 'templates') =>
+    request<{ success: boolean; results: SearchResult }>(
+      `/header/search?q=${encodeURIComponent(query)}${category ? `&category=${category}` : ''}`
+    ),
+
+  // Notifications
+  getNotifications: (limit: number = 20) =>
+    request<{ success: boolean; notifications: Notification[]; unreadCount: number }>(
+      `/header/notifications?limit=${limit}`
+    ),
+
+  markNotificationRead: (id: string) =>
+    request<{ success: boolean }>(`/header/notifications/${id}/read`, { method: 'PUT' }),
+
+  markAllNotificationsRead: () =>
+    request<{ success: boolean }>('/header/notifications/read-all', { method: 'PUT' }),
+
+  deleteNotification: (id: string) =>
+    request<{ success: boolean }>(`/header/notifications/${id}`, { method: 'DELETE' }),
+
+  clearAllNotifications: () =>
+    request<{ success: boolean }>('/header/notifications', { method: 'DELETE' }),
+
+  // Inbox
+  getInbox: (limit: number = 20) =>
+    request<{ success: boolean; messages: InboxMessage[]; unreadCount: number }>(
+      `/header/inbox?limit=${limit}`
+    ),
+
+  markInboxRead: (id: string) =>
+    request<{ success: boolean }>(`/header/inbox/${id}/read`, { method: 'PUT' }),
+
+  markAllInboxRead: () =>
+    request<{ success: boolean }>('/header/inbox/read-all', { method: 'PUT' }),
+
+  deleteInboxMessage: (id: string) =>
+    request<{ success: boolean }>(`/header/inbox/${id}`, { method: 'DELETE' }),
 };

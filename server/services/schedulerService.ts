@@ -93,15 +93,17 @@ class SchedulerService {
         payload.mediaName = job.media_name;
       }
 
-      // Update status to pending first (so blastQueue can pick it up)
-      await blastRepository.updateJobStatus(job.id, 'pending');
+      // Update status to running
+      await blastRepository.updateJobStatus(job.id, 'running');
 
       // Create in-memory job using existing job ID
       const queueJob = blastQueue.createJob(job.user_id, payload, job.id);
-      console.log(`[Scheduler] Created queue job ${queueJob.id}`);
+      console.log(`[Scheduler] Created queue job ${queueJob.id} with ${recipientList.length} recipients`);
 
-      // Start the job
-      blastQueue.startJob(job.user_id, job.id);
+      // Start the job (don't await - let it run in background)
+      blastQueue.startJob(job.user_id, job.id).catch(err => {
+        console.error(`[Scheduler] Job ${job.id} failed:`, err.message);
+      });
       console.log(`[Scheduler] Started job ${job.id}`);
 
     } catch (error: any) {

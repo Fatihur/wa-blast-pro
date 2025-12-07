@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { BlastJob, BlastResult, CreateBlastPayload, MessageType, Recipient, PollData, LocationData } from '../types.js';
 import { whatsappSessionManager } from './whatsappSessionManager.js';
 import { blastRepository } from '../repositories/blastRepository.js';
+import { createNotification } from '../routes/header.js';
 
 interface UserJobState {
   currentJob: BlastJob | null;
@@ -97,12 +98,30 @@ class BlastQueueService extends EventEmitter {
     job.startedAt = new Date();
     this.emit('job_started', userId, job);
 
+    // Create notification for job started
+    createNotification(
+      userId,
+      'blast_started',
+      'Blast Dimulai',
+      `Mengirim pesan ke ${job.progress.total} penerima`,
+      { jobId: job.id }
+    ).catch(() => {});
+
     try {
       await this.processJob(userId, job, state);
     } catch (error) {
       if ((job.status as string) !== 'paused') {
         job.status = 'failed';
         this.emit('job_failed', userId, job, error);
+
+        // Create notification for job failed
+        createNotification(
+          userId,
+          'blast_failed',
+          'Blast Gagal',
+          `Terjadi kesalahan saat mengirim pesan: ${(error as any)?.message || 'Unknown error'}`,
+          { jobId: job.id }
+        ).catch(() => {});
       }
     } finally {
       state.isProcessing = false;
@@ -120,6 +139,22 @@ class BlastQueueService extends EventEmitter {
       }
 
       if ((job.status as string) === 'paused') {
+        break;
+      }
+
+      // Check WhatsApp connection before each send
+      if (!whatsappSessionManager.isReady(userId)) {
+        console.log(`[${userId}] WhatsApp disconnected, pausing job ${job.id}`);
+        job.status = 'paused';
+        this.emit('job_paused', userId, job);
+        
+        // Update database
+        try {
+          await blastRepository.updateJobStatus(job.id, 'paused');
+        } catch (err) {
+          console.error('Failed to update job status:', err);
+        }
+        
         break;
       }
 
@@ -164,7 +199,27 @@ class BlastQueueService extends EventEmitter {
         result.status = 'failed';
         result.error = error.message || 'Unknown error';
         job.progress.failed++;
-        console.error(`[${userId}] Failed to send to ${recipient.phone}:`, error.message);
+        
+        // Only log non-findChat errors (findChat = invalid/unregistered number, expected)
+        const errorMsg = error.message || '';
+        if (!errorMsg.includes('findChat')) {
+          console.error(`[${userId}] Send failed ${recipient.phone}: ${errorMsg.substring(0, 60)}`);
+        }
+        
+        // Check if error is session related - pause job
+        if (error.message?.includes('Session closed') || error.message?.includes('not ready')) {
+          console.log(`[${userId}] Session error detected, pausing job ${job.id}`);
+          job.status = 'paused';
+          this.emit('job_paused', userId, job);
+          
+          try {
+            await blastRepository.updateJobStatus(job.id, 'paused');
+          } catch (err) {
+            console.error('Failed to update job status:', err);
+          }
+          
+          break;
+        }
       }
 
       job.results.push(result);
@@ -204,6 +259,15 @@ class BlastQueueService extends EventEmitter {
       }
       
       this.emit('job_completed', userId, job);
+
+      // Create notification for job completed
+      createNotification(
+        userId,
+        'blast_completed',
+        'Blast Selesai',
+        `Berhasil: ${job.progress.sent}, Gagal: ${job.progress.failed} dari ${job.progress.total} penerima`,
+        { jobId: job.id, sent: job.progress.sent, failed: job.progress.failed }
+      ).catch(() => {});
     }
   }
 
@@ -223,39 +287,54 @@ class BlastQueueService extends EventEmitter {
     });
   }
 
-  pauseJob(userId: string, jobId: string): void {
+  pauseJob(userId: string, jobId: string): boolean {
     const job = this.jobs.get(jobId);
-    if (!job || job.status !== 'running') {
-      throw new Error('Job not found or not running');
+    if (!job) {
+      console.log(`[BlastQueue] Job ${jobId} not found in memory for pause`);
+      return false;
     }
 
     if (job.userId !== userId) {
       throw new Error('Unauthorized to access this job');
+    }
+
+    if (job.status !== 'running') {
+      console.log(`[BlastQueue] Job ${jobId} is not running, cannot pause`);
+      return false;
     }
 
     const state = this.getUserState(userId);
     job.status = 'paused';
     state.abortController?.abort();
     this.emit('job_paused', userId, job);
+    return true;
   }
 
-  async resumeJob(userId: string, jobId: string): Promise<void> {
+  async resumeJob(userId: string, jobId: string): Promise<boolean> {
     const job = this.jobs.get(jobId);
-    if (!job || job.status !== 'paused') {
-      throw new Error('Job not found or not paused');
+    if (!job) {
+      console.log(`[BlastQueue] Job ${jobId} not found in memory for resume`);
+      return false;
     }
 
     if (job.userId !== userId) {
       throw new Error('Unauthorized to access this job');
     }
 
+    if (job.status !== 'paused') {
+      console.log(`[BlastQueue] Job ${jobId} is not paused, cannot resume`);
+      return false;
+    }
+
     await this.startJob(userId, jobId);
+    return true;
   }
 
-  cancelJob(userId: string, jobId: string): void {
+  cancelJob(userId: string, jobId: string): boolean {
     const job = this.jobs.get(jobId);
     if (!job) {
-      throw new Error('Job not found');
+      console.log(`[BlastQueue] Job ${jobId} not found in memory for cancel`);
+      return false;
     }
 
     if (job.userId !== userId) {
@@ -269,6 +348,7 @@ class BlastQueueService extends EventEmitter {
 
     job.status = 'failed';
     this.emit('job_cancelled', userId, job);
+    return true;
   }
 
   getJob(userId: string, jobId: string): BlastJob | undefined {

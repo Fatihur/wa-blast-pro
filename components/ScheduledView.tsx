@@ -1,18 +1,28 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Search, Plus, Trash2, Edit2, Play, Pause, X, Loader2, CheckCircle, AlertCircle, Send, Users, ChevronDown } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Calendar, Clock, Search, Plus, Trash2, Edit2, Play, Pause, X, Loader2, CheckCircle, AlertCircle, Send, Users, ChevronDown, StopCircle } from 'lucide-react';
 import { blastApi, contactsApi } from '../services/api';
 import { Contact, Group } from '../types';
+import { io, Socket } from 'socket.io-client';
+import ConfirmModal from './ConfirmModal';
 
 interface ScheduledJob {
   id: string;
   message_type: 'TEXT' | 'IMAGE' | 'DOCUMENT';
   content: string;
-  status: 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'pending';
   total_recipients: number;
   sent_count: number;
   failed_count: number;
   scheduled_at: string;
   created_at: string;
+}
+
+interface JobProgress {
+  jobId: string;
+  total: number;
+  sent: number;
+  failed: number;
+  current: number;
 }
 
 const ScheduledView: React.FC = () => {
@@ -21,6 +31,8 @@ const ScheduledView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedJob, setSelectedJob] = useState<ScheduledJob | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [jobProgress, setJobProgress] = useState<Map<string, JobProgress>>(new Map());
 
   // Create form state
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -35,6 +47,118 @@ const ScheduledView: React.FC = () => {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Confirmation modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    variant: 'danger' | 'warning' | 'info';
+    confirmText: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    variant: 'danger',
+    confirmText: 'Confirm',
+    onConfirm: () => {}
+  });
+
+  const closeConfirmModal = () => {
+    setConfirmModal(prev => ({ ...prev, isOpen: false }));
+  };
+
+  // Socket.io connection for real-time updates
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+
+    const newSocket = io('http://localhost:3001', {
+      auth: { token }
+    });
+
+    newSocket.on('connect', () => {
+      console.log('[ScheduledView] Socket connected');
+    });
+
+    // Job started
+    newSocket.on('blast_job_started', (job: any) => {
+      console.log('[ScheduledView] Job started:', job.id);
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === job.id ? { ...j, status: 'running' } : j
+      ));
+    });
+
+    // Progress update
+    newSocket.on('blast_progress', (data: { jobId: string; progress: JobProgress; lastResult: any }) => {
+      setJobProgress(prev => {
+        const newMap = new Map(prev);
+        newMap.set(data.jobId, {
+          jobId: data.jobId,
+          ...data.progress
+        });
+        return newMap;
+      });
+
+      // Update sent/failed counts in job list
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === data.jobId ? { 
+          ...j, 
+          sent_count: data.progress.sent, 
+          failed_count: data.progress.failed 
+        } : j
+      ));
+    });
+
+    // Job completed
+    newSocket.on('blast_job_completed', (job: any) => {
+      console.log('[ScheduledView] Job completed:', job.id);
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === job.id ? { 
+          ...j, 
+          status: 'completed',
+          sent_count: job.progress?.sent || j.sent_count,
+          failed_count: job.progress?.failed || j.failed_count
+        } : j
+      ));
+      setJobProgress(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(job.id);
+        return newMap;
+      });
+    });
+
+    // Job paused
+    newSocket.on('blast_job_paused', (job: any) => {
+      console.log('[ScheduledView] Job paused:', job.id);
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === job.id ? { ...j, status: 'paused' } : j
+      ));
+    });
+
+    // Job failed
+    newSocket.on('blast_job_failed', (data: { job: any; error: string }) => {
+      console.log('[ScheduledView] Job failed:', data.job.id, data.error);
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === data.job.id ? { ...j, status: 'failed' } : j
+      ));
+    });
+
+    // Job cancelled
+    newSocket.on('blast_job_cancelled', (job: any) => {
+      console.log('[ScheduledView] Job cancelled:', job.id);
+      setScheduledJobs(prev => prev.map(j => 
+        j.id === job.id ? { ...j, status: 'cancelled' } : j
+      ));
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     loadScheduledJobs();
@@ -109,6 +233,18 @@ const ScheduledView: React.FC = () => {
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
             <X size={12} /> Cancelled
+          </span>
+        );
+      case 'paused':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-700">
+            <Pause size={12} /> Paused
+          </span>
+        );
+      case 'pending':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+            <Clock size={12} /> Pending
           </span>
         );
       default:
@@ -208,26 +344,76 @@ const ScheduledView: React.FC = () => {
     }
   };
 
-  const handleCancelJob = async (jobId: string) => {
-    if (!confirm('Are you sure you want to cancel this scheduled blast?')) return;
-    
+  const handleCancelScheduled = (jobId: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Cancel Scheduled Blast?',
+      message: 'This will cancel the scheduled blast. It will not be sent at the scheduled time.',
+      variant: 'warning',
+      confirmText: 'Cancel Blast',
+      onConfirm: async () => {
+        closeConfirmModal();
+        try {
+          await blastApi.cancelScheduled(jobId);
+          loadScheduledJobs();
+        } catch (err) {
+          console.error('Failed to cancel:', err);
+        }
+      }
+    });
+  };
+
+  const handlePauseJob = async (jobId: string) => {
     try {
-      await blastApi.cancelScheduled(jobId);
-      loadScheduledJobs();
+      await blastApi.pause(jobId);
     } catch (err) {
-      console.error('Failed to cancel:', err);
+      console.error('Failed to pause:', err);
     }
   };
 
-  const handleDeleteJob = async (jobId: string) => {
-    if (!confirm('Are you sure you want to delete this scheduled blast?')) return;
-    
+  const handleResumeJob = async (jobId: string) => {
     try {
-      await blastApi.deleteJob(jobId);
-      setScheduledJobs(prev => prev.filter(j => j.id !== jobId));
+      await blastApi.resume(jobId);
     } catch (err) {
-      console.error('Failed to delete:', err);
+      console.error('Failed to resume:', err);
     }
+  };
+
+  const handleCancelRunningJob = (jobId: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Stop Running Blast?',
+      message: 'This will stop the blast immediately. Messages already sent cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Stop Blast',
+      onConfirm: async () => {
+        closeConfirmModal();
+        try {
+          await blastApi.cancel(jobId);
+        } catch (err) {
+          console.error('Failed to cancel:', err);
+        }
+      }
+    });
+  };
+
+  const handleDeleteJob = (jobId: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Delete Blast?',
+      message: 'This will permanently delete this blast record. This action cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        closeConfirmModal();
+        try {
+          await blastApi.deleteJob(jobId);
+          setScheduledJobs(prev => prev.filter(j => j.id !== jobId));
+        } catch (err) {
+          console.error('Failed to delete:', err);
+        }
+      }
+    });
   };
 
   const filteredJobs = scheduledJobs.filter(job =>
@@ -235,7 +421,8 @@ const ScheduledView: React.FC = () => {
   );
 
   const upcomingJobs = filteredJobs.filter(j => j.status === 'scheduled');
-  const pastJobs = filteredJobs.filter(j => j.status !== 'scheduled');
+  const runningJobs = filteredJobs.filter(j => j.status === 'running' || j.status === 'paused' || j.status === 'pending');
+  const pastJobs = filteredJobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status));
 
   // Get minimum date (today)
   const today = new Date().toISOString().split('T')[0];
@@ -258,7 +445,11 @@ const ScheduledView: React.FC = () => {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
+          <div className="text-2xl font-bold text-yellow-600">{runningJobs.length}</div>
+          <div className="text-sm text-gray-500">Running</div>
+        </div>
         <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm">
           <div className="text-2xl font-bold text-blue-600">{upcomingJobs.length}</div>
           <div className="text-sm text-gray-500">Upcoming</div>
@@ -314,6 +505,81 @@ const ScheduledView: React.FC = () => {
           </div>
         ) : (
           <div className="divide-y divide-gray-50">
+            {/* Running Section */}
+            {runningJobs.length > 0 && (
+              <div className="p-4 md:p-6">
+                <h3 className="text-sm font-bold text-yellow-600 uppercase tracking-wider mb-4 flex items-center gap-2">
+                  <Loader2 size={14} className="animate-spin" />
+                  Running Now
+                </h3>
+                <div className="space-y-3">
+                  {runningJobs.map(job => {
+                    const progress = jobProgress.get(job.id);
+                    const progressPercent = job.total_recipients > 0 
+                      ? Math.round((job.sent_count + job.failed_count) / job.total_recipients * 100) 
+                      : 0;
+                    
+                    return (
+                      <div key={job.id} className="p-4 bg-yellow-50 border border-yellow-200 rounded-2xl">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            {getStatusBadge(job.status)}
+                            <span className="text-sm text-gray-600 font-medium">
+                              {job.sent_count}/{job.total_recipients} sent
+                              {job.failed_count > 0 && <span className="text-red-500 ml-1">({job.failed_count} failed)</span>}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {job.status === 'running' && (
+                              <button
+                                onClick={() => handlePauseJob(job.id)}
+                                className="p-2 text-yellow-600 hover:bg-yellow-100 rounded-lg transition-colors"
+                                title="Pause"
+                              >
+                                <Pause size={18} />
+                              </button>
+                            )}
+                            {job.status === 'paused' && (
+                              <button
+                                onClick={() => handleResumeJob(job.id)}
+                                className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors"
+                                title="Resume"
+                              >
+                                <Play size={18} />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleCancelRunningJob(job.id)}
+                              className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors"
+                              title="Cancel"
+                            >
+                              <StopCircle size={18} />
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* Progress Bar */}
+                        <div className="mb-3">
+                          <div className="h-2 bg-yellow-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-yellow-500 rounded-full transition-all duration-300"
+                              style={{ width: `${progressPercent}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between mt-1 text-xs text-gray-500">
+                            <span>{progressPercent}% complete</span>
+                            <span>{job.total_recipients - job.sent_count - job.failed_count} remaining</span>
+                          </div>
+                        </div>
+                        
+                        <p className="text-gray-700 line-clamp-1 text-sm">{job.content}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Upcoming Section */}
             {upcomingJobs.length > 0 && (
               <div className="p-4 md:p-6">
@@ -337,7 +603,7 @@ const ScheduledView: React.FC = () => {
                       </div>
                       <div className="flex items-center gap-2 ml-4">
                         <button
-                          onClick={() => handleCancelJob(job.id)}
+                          onClick={() => handleCancelScheduled(job.id)}
                           className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                           title="Cancel"
                         >
@@ -533,6 +799,17 @@ const ScheduledView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        variant={confirmModal.variant}
+        confirmText={confirmModal.confirmText}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={closeConfirmModal}
+      />
 
       <style>{`
         @keyframes scaleIn {

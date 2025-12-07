@@ -12,6 +12,14 @@ const ContactsView: React.FC = () => {
   const [waConnected, setWaConnected] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalContacts, setTotalContacts] = useState(0);
+  const [pageSize] = useState(20);
+  const [searchTerm, setSearchTerm] = useState('');
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  
   // Modal states
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [showImportCSVModal, setShowImportCSVModal] = useState(false);
@@ -24,33 +32,47 @@ const ContactsView: React.FC = () => {
   const [csvData, setCsvData] = useState<Array<{ name: string; phone: string; tags: string[] }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load contacts and groups from database
-  const loadData = useCallback(async () => {
+  // Load contacts with pagination
+  const loadContacts = useCallback(async (page: number = 1, search: string = '') => {
     setIsLoading(true);
     try {
-      const [contactsRes, groupsRes] = await Promise.all([
-        contactsApi.getAll(),
-        contactsApi.getGroups()
-      ]);
-      
-      if (contactsRes.success) {
-        setContacts(contactsRes.contacts);
+      const result = await contactsApi.getPaginated(page, pageSize, search);
+      if (result.success) {
+        setContacts(result.contacts);
+        setTotalPages(result.totalPages);
+        setTotalContacts(result.total);
+        setCurrentPage(result.page);
       }
+    } catch (err: any) {
+      console.error('Failed to load contacts:', err);
+      setSyncMessage(`Failed to load contacts: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [pageSize]);
+
+  // Load groups
+  const loadGroups = useCallback(async () => {
+    try {
+      const groupsRes = await contactsApi.getGroups();
       if (groupsRes.success) {
         setGroups(groupsRes.groups);
       }
     } catch (err: any) {
-      console.error('Failed to load data:', err);
-      setSyncMessage(`Failed to load data: ${err.message}`);
-    } finally {
-      setIsLoading(false);
+      console.error('Failed to load groups:', err);
     }
   }, []);
 
-  // Load data on mount
+  // Combined load function (used for refresh after CRUD operations)
+  const loadData = useCallback(async () => {
+    await Promise.all([loadContacts(currentPage, searchTerm), loadGroups()]);
+  }, [loadContacts, loadGroups, currentPage, searchTerm]);
+
+  // Initial load on mount
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    loadContacts(1, '');
+    loadGroups();
+  }, []);
 
   // Check WhatsApp connection status
   useEffect(() => {
@@ -82,10 +104,10 @@ const ContactsView: React.FC = () => {
       const waResult = await contactsApi.getFromWhatsApp();
       if (waResult.success && waResult.contacts) {
         const waContacts = waResult.contacts
-          .filter(c => !c.isGroup && c.phone)
+          .filter(c => !c.isGroup && c.number)
           .map(c => ({
-            name: c.name || c.pushname || c.phone,
-            phone: c.phone.startsWith('+') ? c.phone : `+${c.phone}`,
+            name: c.name || c.pushname || c.number,
+            phone: c.number.startsWith('+') ? c.number : `+${c.number}`,
             tags: ['WhatsApp']
           }));
         
@@ -108,18 +130,32 @@ const ContactsView: React.FC = () => {
       setTimeout(() => setSyncMessage(null), 3000);
     }
   };
-  const [searchTerm, setSearchTerm] = useState('');
-  
   // Bulk Action State
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
-  // Filter logic based on active tab
-  const filteredContacts = contacts.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    c.phone.includes(searchTerm)
-  );
+  // Handle search with debounce
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    searchTimeoutRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      loadContacts(1, value);
+    }, 300);
+  };
 
+  // Handle page change
+  const handlePageChange = (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+      loadContacts(page, searchTerm);
+      setSelectedItems(new Set());
+    }
+  };
+
+  // For groups, use client-side filtering
   const filteredGroups = groups.filter(g => 
     g.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -141,7 +177,7 @@ const ContactsView: React.FC = () => {
   };
 
   const toggleAll = () => {
-    const currentItems = activeTab === 'contacts' ? filteredContacts : filteredGroups;
+    const currentItems = activeTab === 'contacts' ? contacts : filteredGroups;
     if (selectedItems.size === currentItems.length) {
       setSelectedItems(new Set());
     } else {
@@ -324,7 +360,7 @@ const ContactsView: React.FC = () => {
   };
 
   const isAllSelected = activeTab === 'contacts' 
-    ? filteredContacts.length > 0 && selectedItems.size === filteredContacts.length
+    ? contacts.length > 0 && selectedItems.size === contacts.length
     : filteredGroups.length > 0 && selectedItems.size === filteredGroups.length;
 
   return (
@@ -402,7 +438,7 @@ const ContactsView: React.FC = () => {
                     onClick={() => setActiveTab('contacts')}
                     className={`pb-4 font-medium text-sm md:text-base border-b-2 transition-colors ${activeTab === 'contacts' ? 'text-emerald-600 border-emerald-600' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
                  >
-                    All Contacts ({contacts.length})
+                    All Contacts ({totalContacts})
                  </button>
                  <button 
                     onClick={() => setActiveTab('groups')}
@@ -421,7 +457,7 @@ const ContactsView: React.FC = () => {
                         placeholder={activeTab === 'contacts' ? "Search by name or phone..." : "Search group name..."}
                         className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                         value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
+                        onChange={(e) => handleSearchChange(e.target.value)}
                      />
                  </div>
                  <div className="flex items-center gap-2 w-full md:w-auto">
@@ -434,8 +470,10 @@ const ContactsView: React.FC = () => {
          </div>
 
          {/* List Content */}
-         <div className="flex-1 overflow-y-auto p-2 pb-24"> {/* Added pb-24 for bottom bar space */}
-             {activeTab === 'contacts' ? (
+         <div className="flex-1 flex flex-col overflow-hidden">
+           {activeTab === 'contacts' ? (
+             <>
+               <div className="flex-1 overflow-y-auto p-2">
                  <div className="overflow-x-auto">
                     <table className="w-full min-w-[700px]">
                         <thead className="bg-gray-50 text-gray-500 text-sm uppercase tracking-wider sticky top-0 z-10">
@@ -457,7 +495,7 @@ const ContactsView: React.FC = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                            {filteredContacts.map((contact) => {
+                            {contacts.map((contact) => {
                                 const isSelected = selectedItems.has(contact.id);
                                 return (
                                     <tr key={contact.id} className={`transition-colors group ${isSelected ? 'bg-emerald-50/50' : 'hover:bg-gray-50/80'}`}>
@@ -508,7 +546,7 @@ const ContactsView: React.FC = () => {
                             })}
                         </tbody>
                     </table>
-                    {filteredContacts.length === 0 && (
+                    {contacts.length === 0 && !isLoading && (
                         <div className="flex flex-col items-center justify-center h-64 text-gray-400">
                             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
                                 <Users size={32} />
@@ -517,9 +555,80 @@ const ContactsView: React.FC = () => {
                         </div>
                     )}
                  </div>
-             ) : (
-                 // Groups View
-                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+               </div>
+
+               {/* Pagination Controls - Fixed at bottom */}
+               {totalPages > 1 && (
+                 <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-white">
+                   <div className="text-sm text-gray-500">
+                     Showing {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalContacts)} of {totalContacts} contacts
+                   </div>
+                   <div className="flex items-center gap-2">
+                     <button
+                       onClick={() => handlePageChange(1)}
+                       disabled={currentPage === 1}
+                       className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                     >
+                       First
+                     </button>
+                     <button
+                       onClick={() => handlePageChange(currentPage - 1)}
+                       disabled={currentPage === 1}
+                       className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                     >
+                       Prev
+                     </button>
+                     
+                     <div className="flex items-center gap-1">
+                       {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                         let pageNum;
+                         if (totalPages <= 5) {
+                           pageNum = i + 1;
+                         } else if (currentPage <= 3) {
+                           pageNum = i + 1;
+                         } else if (currentPage >= totalPages - 2) {
+                           pageNum = totalPages - 4 + i;
+                         } else {
+                           pageNum = currentPage - 2 + i;
+                         }
+                         return (
+                           <button
+                             key={pageNum}
+                             onClick={() => handlePageChange(pageNum)}
+                             className={`w-8 h-8 text-sm font-medium rounded-lg transition-colors ${
+                               currentPage === pageNum
+                                 ? 'bg-emerald-600 text-white'
+                                 : 'border border-gray-200 bg-white hover:bg-gray-50'
+                             }`}
+                           >
+                             {pageNum}
+                           </button>
+                         );
+                       })}
+                     </div>
+
+                     <button
+                       onClick={() => handlePageChange(currentPage + 1)}
+                       disabled={currentPage === totalPages}
+                       className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                     >
+                       Next
+                     </button>
+                     <button
+                       onClick={() => handlePageChange(totalPages)}
+                       disabled={currentPage === totalPages}
+                       className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                     >
+                       Last
+                     </button>
+                   </div>
+                 </div>
+               )}
+             </>
+           ) : (
+             // Groups View
+             <div className="flex-1 overflow-y-auto p-4">
+               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {/* Select All for Groups (Optional helper) */}
                     {filteredGroups.length > 0 && (
                          <div className="col-span-full flex items-center gap-2 mb-2 px-1">
@@ -594,8 +703,9 @@ const ContactsView: React.FC = () => {
                             <p>No groups found.</p>
                         </div>
                     )}
-                 </div>
-             )}
+               </div>
+             </div>
+           )}
          </div>
       </div>
 

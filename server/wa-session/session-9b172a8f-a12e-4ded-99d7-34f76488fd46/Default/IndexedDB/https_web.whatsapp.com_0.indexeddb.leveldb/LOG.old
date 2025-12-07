@@ -1,0 +1,55 @@
+2025/12/07-13:26:35.517 31e8 Reusing MANIFEST D:\PROYEK\wa-blast-pro\server\wa-session\session-9b172a8f-a12e-4ded-99d7-34f76488fd46\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/12/07-13:26:35.518 31e8 Recovering log #1201
+2025/12/07-13:26:35.707 31e8 Reusing old log D:\PROYEK\wa-blast-pro\server\wa-session\session-9b172a8f-a12e-4ded-99d7-34f76488fd46\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/001201.log 
+2025/12/07-13:26:39.167 bd8 Level-0 table #1221: started
+2025/12/07-13:26:39.198 bd8 Level-0 table #1221: 791897 bytes OK
+2025/12/07-13:26:39.200 bd8 Delete type=0 #1201
+2025/12/07-13:26:39.201 bd8 Manual compaction at level-0 from '\x00\x1e\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1e\x00\x00\x05' @ 3589572 : 1
+2025/12/07-13:26:39.201 bd8 Compacting 1@0 + 1@1 files
+2025/12/07-13:26:39.255 bd8 Generated table #1222@0: 15209 keys, 274857 bytes
+2025/12/07-13:26:39.275 bd8 Generated table #1223@0: 2476 keys, 77809 bytes
+2025/12/07-13:26:39.280 bd8 Generated table #1224@0: 452 keys, 11506 bytes
+2025/12/07-13:26:39.280 bd8 Compacted 1@0 + 1@1 files => 364172 bytes
+2025/12/07-13:26:39.282 bd8 compacted to: files[ 0 3 23 0 0 0 0 ]
+2025/12/07-13:26:39.283 bd8 Delete type=2 #1221
+2025/12/07-13:26:39.283 bd8 Manual compaction at level-0 from '\x00\x1e\x00\x00\x05' @ 3589572 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/12/07-13:26:43.433 2b84 Compacting 1@1 + 10@2 files
+2025/12/07-13:26:43.570 2b84 Generated table #1225@1: 26671 keys, 2236827 bytes
+2025/12/07-13:26:43.768 2b84 Generated table #1226@1: 24260 keys, 2275747 bytes
+2025/12/07-13:26:43.908 2b84 Generated table #1227@1: 29520 keys, 2252142 bytes
+2025/12/07-13:26:43.977 2b84 Generated table #1228@1: 10070 keys, 2163920 bytes
+2025/12/07-13:26:44.044 2b84 Generated table #1229@1: 6906 keys, 2127166 bytes
+2025/12/07-13:26:44.181 2b84 Generated table #1230@1: 53237 keys, 2187502 bytes
+2025/12/07-13:26:44.400 2b84 Generated table #1231@1: 107000 keys, 2258215 bytes
+2025/12/07-13:26:44.613 2b84 Generated table #1232@1: 106112 keys, 2255298 bytes
+2025/12/07-13:26:44.814 2b84 Generated table #1233@1: 108216 keys, 2259969 bytes
+2025/12/07-13:26:45.014 2b84 Generated table #1234@1: 106536 keys, 2255982 bytes
+2025/12/07-13:26:45.018 2b84 Generated table #1235@1: 981 keys, 19747 bytes
+2025/12/07-13:26:45.018 2b84 Compacted 1@1 + 10@2 files => 22292515 bytes
+2025/12/07-13:26:45.019 2b84 compacted to: files[ 0 2 24 0 0 0 0 ]
+2025/12/07-13:26:45.020 2b84 Delete type=2 #1205
+2025/12/07-13:26:45.020 2b84 Delete type=2 #1206
+2025/12/07-13:26:45.020 2b84 Delete type=2 #1207
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1208
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1209
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1210
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1211
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1212
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1213
+2025/12/07-13:26:45.021 2b84 Delete type=2 #1214
+2025/12/07-13:26:45.022 2b84 Delete type=2 #1215
+2025/12/07-13:26:45.022 2b84 Delete type=2 #1223
+2025/12/07-13:26:45.251 2b84 Compacting 1@1 + 10@2 files
+2025/12/07-13:26:45.468 2b84 Generated table #1236@1: 78931 keys, 2254965 bytes
+2025/12/07-13:26:45.596 2b84 Generated table #1237@1: 34994 keys, 2197557 bytes
+2025/12/07-13:26:45.635 2b84 Generated table #1238@1: 1650 keys, 2142527 bytes
+2025/12/07-13:26:45.677 2b84 Generated table #1239@1: 1731 keys, 2144592 bytes
+2025/12/07-13:26:45.723 2b84 Generated table #1240@1: 1854 keys, 2146474 bytes
+2025/12/07-13:26:45.789 2b84 Generated table #1241@1: 2025 keys, 2150193 bytes
+2025/12/07-13:26:45.847 2b84 Generated table #1242@1: 1832 keys, 2159714 bytes
+2025/12/07-13:26:45.897 2b84 Generated table #1243@1: 1775 keys, 2156167 bytes
+2025/12/07-13:26:45.944 2b84 Generated table #1244@1: 1737 keys, 2156917 bytes
+2025/12/07-13:26:45.993 2b84 Generated table #1245@1: 1744 keys, 2155708 bytes
+2025/12/07-13:26:46.001 2b84 Generated table #1246@1: 34 keys, 52175 bytes
+2025/12/07-13:26:46.001 2b84 Compacted 1@1 + 10@2 files => 21716989 bytes
+2025/12/07-13:26:46.002 2b84 compacted to: files[ 0 1 25 0 0 0 0 ]

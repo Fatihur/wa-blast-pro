@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     id VARCHAR(36) PRIMARY KEY,
     user_id VARCHAR(36) NOT NULL,
     name VARCHAR(255) NOT NULL,
-    phone VARCHAR(20) NOT NULL,
+    phone VARCHAR(50) NOT NULL,
     tags JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS blast_jobs (
 CREATE TABLE IF NOT EXISTS blast_recipients (
     id VARCHAR(36) PRIMARY KEY,
     job_id VARCHAR(36) NOT NULL,
-    phone VARCHAR(20) NOT NULL,
+    phone VARCHAR(50) NOT NULL,
     name VARCHAR(255) NOT NULL DEFAULT '',
     status ENUM('pending', 'success', 'failed') DEFAULT 'pending',
     message_id VARCHAR(255),
@@ -141,6 +141,56 @@ CREATE TABLE IF NOT EXISTS settings (
     `value` TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+-- User Settings table (per-user settings)
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id VARCHAR(36) NOT NULL,
+    `key` VARCHAR(100) NOT NULL,
+    `value` TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, `key`),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    type ENUM('blast_completed', 'blast_failed', 'blast_started', 'session_disconnected', 'scheduled_reminder', 'system') DEFAULT 'system',
+    title VARCHAR(255) NOT NULL,
+    message TEXT,
+    data JSON,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_is_read (is_read),
+    INDEX idx_created (created_at)
+);
+
+-- Inbox messages table (replies from WhatsApp recipients)
+CREATE TABLE IF NOT EXISTS inbox_messages (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    from_phone VARCHAR(50) NOT NULL,
+    from_name VARCHAR(255),
+    message_type ENUM('TEXT', 'IMAGE', 'DOCUMENT', 'AUDIO', 'VIDEO', 'STICKER', 'OTHER') DEFAULT 'TEXT',
+    content TEXT,
+    media_url VARCHAR(500),
+    is_read BOOLEAN DEFAULT FALSE,
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_is_read (is_read),
+    INDEX idx_from_phone (from_phone),
+    INDEX idx_received (received_at)
+);
+
+-- Migration: Increase phone column sizes for WhatsApp IDs (run these if upgrading existing database)
+-- ALTER TABLE contacts MODIFY phone VARCHAR(50) NOT NULL;
+-- ALTER TABLE blast_recipients MODIFY phone VARCHAR(50) NOT NULL;
+-- ALTER TABLE inbox_messages MODIFY from_phone VARCHAR(50) NOT NULL;
 
 -- Insert default settings
 INSERT IGNORE INTO settings (`key`, `value`) VALUES

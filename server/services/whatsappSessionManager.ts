@@ -380,15 +380,32 @@ class WhatsAppSessionManager extends EventEmitter {
         const isGroup = (chat as any).isGroup;
         
         if (!isGroup) {
-          const contact = await chat.getContact();
-          const phone = (contact as any).number || chatId.replace('@c.us', '');
+          // Extract info directly from chat without calling getContact()
+          const phone = chatId.replace('@c.us', '');
+          
+          // Try multiple sources for the contact name
+          const chatData = (chat as any)._data || {};
+          const contactName = 
+            chatData.name ||
+            chatData.pushname ||
+            chatData.notifyName ||
+            chatData.verifiedName ||
+            chatData.formattedTitle ||
+            (chat as any).name ||
+            (chat as any).formattedTitle ||
+            '';
+          
+          // Don't use phone number as name
+          const displayName = (contactName && contactName !== phone && !contactName.startsWith('+')) 
+            ? contactName 
+            : '';
           
           if (!contactsMap.has(chatId)) {
             contactsMap.set(chatId, {
               id: chatId,
-              name: (contact as any).name || (contact as any).pushname || phone || 'Unknown',
+              name: displayName || phone || 'Unknown',
               phone: phone,
-              pushname: (contact as any).pushname,
+              pushname: chatData.pushname || chatData.notifyName || '',
               isGroup: false
             });
           }
@@ -590,6 +607,539 @@ class WhatsAppSessionManager extends EventEmitter {
 
     const participants = (chat as any).participants || [];
     return participants.map((p: any) => p.id._serialized.replace('@c.us', ''));
+  }
+
+  // ==================== CONTACT METHODS ====================
+
+  async getContactById(userId: string, contactId: string): Promise<any> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    try {
+      const contact = await session.client.getContactById(contactId);
+      return {
+        id: (contact as any).id._serialized,
+        number: (contact as any).number || contactId.replace('@c.us', '').replace('@g.us', ''),
+        name: (contact as any).name || null,
+        pushname: (contact as any).pushname || '',
+        shortName: (contact as any).shortName || null,
+        isBlocked: (contact as any).isBlocked || false,
+        isBusiness: (contact as any).isBusiness || false,
+        isEnterprise: (contact as any).isEnterprise || false,
+        isGroup: (contact as any).isGroup || contactId.includes('@g.us'),
+        isMe: (contact as any).isMe || false,
+        isMyContact: (contact as any).isMyContact || false,
+        isUser: (contact as any).isUser || contactId.includes('@c.us'),
+        isWAContact: (contact as any).isWAContact !== false
+      };
+    } catch (error) {
+      // Fallback: get from chat if contact method fails
+      console.log(`[${userId}] getContactById failed, trying via chat`);
+      try {
+        const chat = await session.client.getChatById(contactId);
+        const chatName = (chat as any).name || (chat as any).formattedTitle || '';
+        return {
+          id: contactId,
+          number: contactId.replace('@c.us', '').replace('@g.us', ''),
+          name: chatName || null,
+          pushname: chatName || '',
+          shortName: null,
+          isBlocked: false,
+          isBusiness: false,
+          isEnterprise: false,
+          isGroup: contactId.includes('@g.us'),
+          isMe: false,
+          isMyContact: false,
+          isUser: contactId.includes('@c.us'),
+          isWAContact: true
+        };
+      } catch {
+        // Last resort: return minimal info
+        return {
+          id: contactId,
+          number: contactId.replace('@c.us', '').replace('@g.us', ''),
+          name: null,
+          pushname: '',
+          shortName: null,
+          isBlocked: false,
+          isBusiness: false,
+          isEnterprise: false,
+          isGroup: contactId.includes('@g.us'),
+          isMe: false,
+          isMyContact: false,
+          isUser: contactId.includes('@c.us'),
+          isWAContact: true
+        };
+      }
+    }
+  }
+
+  async getAllContacts(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    try {
+      const contacts = await session.client.getContacts();
+      return contacts.map((contact: any) => ({
+        id: contact.id._serialized,
+        number: contact.number || contact.id._serialized.replace('@c.us', '').replace('@g.us', ''),
+        name: contact.name,
+        pushname: contact.pushname,
+        shortName: contact.shortName,
+        isBlocked: contact.isBlocked || false,
+        isBusiness: contact.isBusiness || false,
+        isEnterprise: contact.isEnterprise || false,
+        isGroup: contact.isGroup || contact.id.server === 'g.us',
+        isMe: contact.isMe || false,
+        isMyContact: contact.isMyContact || false,
+        isUser: contact.isUser || contact.id.server === 'c.us',
+        isWAContact: contact.isWAContact || true
+      }));
+    } catch (error) {
+      console.log(`[${userId}] getAllContacts failed, falling back to getChats method`);
+      return await this.getAllContactsFromChats(userId);
+    }
+  }
+
+  async getAllContactsFromChats(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chats = await session.client.getChats();
+    const contactsList: any[] = [];
+
+    for (const chat of chats) {
+      try {
+        const chatId = (chat as any).id._serialized;
+        const isGroup = (chat as any).isGroup;
+        
+        if (!isGroup) {
+          // Extract info directly from chat without calling getContact()
+          const number = chatId.replace('@c.us', '');
+          
+          // Try multiple sources for the contact name
+          const chatData = (chat as any)._data || {};
+          const contactName = 
+            chatData.name ||
+            chatData.pushname ||
+            chatData.notifyName ||
+            chatData.verifiedName ||
+            chatData.formattedTitle ||
+            (chat as any).name ||
+            (chat as any).formattedTitle ||
+            '';
+          
+          // Don't use phone number as name - leave empty if no name found
+          const displayName = (contactName && contactName !== number && !contactName.startsWith('+')) 
+            ? contactName 
+            : '';
+          
+          contactsList.push({
+            id: chatId,
+            number: number,
+            name: displayName || null,
+            pushname: chatData.pushname || chatData.notifyName || '',
+            shortName: chatData.shortName || null,
+            isBlocked: false,
+            isBusiness: chatData.isBusiness || false,
+            isEnterprise: chatData.isEnterprise || false,
+            isGroup: false,
+            isMe: false,
+            isMyContact: !!chatData.isAddressBookContact,
+            isUser: true,
+            isWAContact: true
+          });
+        } else {
+          contactsList.push({
+            id: chatId,
+            number: '',
+            name: (chat as any).name || 'Unknown Group',
+            pushname: '',
+            shortName: null,
+            isBlocked: false,
+            isBusiness: false,
+            isEnterprise: false,
+            isGroup: true,
+            isMe: false,
+            isMyContact: false,
+            isUser: false,
+            isWAContact: true
+          });
+        }
+      } catch (err) {
+        console.error(`[${userId}] Error loading contact from chat:`, err);
+      }
+    }
+
+    return contactsList;
+  }
+
+  async getContactProfilePicUrl(userId: string, contactId: string): Promise<string | null> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    try {
+      const contact = await session.client.getContactById(contactId);
+      return await contact.getProfilePicUrl();
+    } catch {
+      return null;
+    }
+  }
+
+  async getContactAbout(userId: string, contactId: string): Promise<string | null> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    try {
+      const contact = await session.client.getContactById(contactId);
+      return await contact.getAbout();
+    } catch {
+      return null;
+    }
+  }
+
+  async getContactFormattedNumber(userId: string, contactId: string): Promise<string> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const contact = await session.client.getContactById(contactId);
+    return await contact.getFormattedNumber();
+  }
+
+  async getContactCountryCode(userId: string, contactId: string): Promise<string> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const contact = await session.client.getContactById(contactId);
+    return await contact.getCountryCode();
+  }
+
+  async getContactCommonGroups(userId: string, contactId: string): Promise<string[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const contact = await session.client.getContactById(contactId);
+    const groups = await contact.getCommonGroups();
+    return groups.map((g: any) => g._serialized || g);
+  }
+
+  async blockContact(userId: string, contactId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const contact = await session.client.getContactById(contactId);
+    return await contact.block();
+  }
+
+  async unblockContact(userId: string, contactId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const contact = await session.client.getContactById(contactId);
+    return await contact.unblock();
+  }
+
+  async getBlockedContacts(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const blockedContacts = await session.client.getBlockedContacts();
+    return blockedContacts.map((contact: any) => ({
+      id: contact.id._serialized,
+      number: contact.number,
+      name: contact.name,
+      pushname: contact.pushname
+    }));
+  }
+
+  // ==================== CHAT METHODS ====================
+
+  async getAllChats(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chats = await session.client.getChats();
+    return chats.map((chat: any) => ({
+      id: chat.id._serialized,
+      name: chat.name || chat.formattedTitle || 'Unknown',
+      isGroup: chat.isGroup,
+      isReadOnly: chat.isReadOnly,
+      unreadCount: chat.unreadCount,
+      timestamp: chat.timestamp,
+      archived: chat.archived,
+      pinned: chat.pinned,
+      isMuted: chat.isMuted,
+      muteExpiration: chat.muteExpiration,
+      lastMessage: chat.lastMessage ? {
+        body: chat.lastMessage.body,
+        timestamp: chat.lastMessage.timestamp,
+        fromMe: chat.lastMessage.fromMe
+      } : null
+    }));
+  }
+
+  async getChatById(userId: string, chatId: string): Promise<any> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return {
+      id: (chat as any).id._serialized,
+      name: (chat as any).name || (chat as any).formattedTitle || 'Unknown',
+      isGroup: (chat as any).isGroup,
+      isReadOnly: (chat as any).isReadOnly,
+      unreadCount: (chat as any).unreadCount,
+      timestamp: (chat as any).timestamp,
+      archived: (chat as any).archived,
+      pinned: (chat as any).pinned,
+      isMuted: (chat as any).isMuted,
+      muteExpiration: (chat as any).muteExpiration
+    };
+  }
+
+  async fetchChatMessages(userId: string, chatId: string, options?: { limit?: number; fromMe?: boolean }): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    const messages = await chat.fetchMessages(options || {});
+    return messages.map((msg: any) => ({
+      id: msg.id._serialized,
+      body: msg.body,
+      type: msg.type,
+      timestamp: msg.timestamp,
+      fromMe: msg.fromMe,
+      from: msg.from,
+      to: msg.to,
+      hasMedia: msg.hasMedia,
+      isForwarded: msg.isForwarded,
+      isStarred: msg.isStarred
+    }));
+  }
+
+  async sendMessageToChat(userId: string, chatId: string, content: string, options?: any): Promise<any> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.sendMessage(content, options);
+  }
+
+  async sendSeenToChat(userId: string, chatId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.sendSeen();
+  }
+
+  async archiveChat(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.archive();
+  }
+
+  async unarchiveChat(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.unarchive();
+  }
+
+  async pinChat(userId: string, chatId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.pin();
+  }
+
+  async unpinChat(userId: string, chatId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.unpin();
+  }
+
+  async muteChat(userId: string, chatId: string, unmuteDate?: Date): Promise<{ isMuted: boolean; muteExpiration: number }> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.mute(unmuteDate);
+  }
+
+  async unmuteChat(userId: string, chatId: string): Promise<{ isMuted: boolean; muteExpiration: number }> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.unmute();
+  }
+
+  async markChatUnread(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.markUnread();
+  }
+
+  async clearChatMessages(userId: string, chatId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.clearMessages();
+  }
+
+  async deleteChat(userId: string, chatId: string): Promise<boolean> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.delete();
+  }
+
+  async getChatContact(userId: string, chatId: string): Promise<any> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    const chatName = (chat as any).name || (chat as any).formattedTitle || '';
+    const isGroup = chatId.includes('@g.us');
+    
+    return {
+      id: chatId,
+      name: chatName || 'Unknown',
+      number: isGroup ? '' : chatId.replace('@c.us', ''),
+      pushname: chatName,
+      isGroup: isGroup,
+      isWAContact: true
+    };
+  }
+
+  async sendTypingState(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.sendStateTyping();
+  }
+
+  async sendRecordingState(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.sendStateRecording();
+  }
+
+  async clearChatState(userId: string, chatId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.clearState();
+  }
+
+  async getPinnedMessages(userId: string, chatId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    const messages = await chat.getPinnedMessages();
+    return (messages || []).map((msg: any) => ({
+      id: msg.id._serialized,
+      body: msg.body,
+      type: msg.type,
+      timestamp: msg.timestamp,
+      fromMe: msg.fromMe
+    }));
+  }
+
+  async getChatLabels(userId: string, chatId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    return await chat.getLabels();
+  }
+
+  async changeChatLabels(userId: string, chatId: string, labelIds: (string | number)[]): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client || session.status !== ConnectionStatus.READY) {
+      throw new Error('WhatsApp client is not ready');
+    }
+
+    const chat = await session.client.getChatById(chatId);
+    await chat.changeLabels(labelIds);
   }
 
   isReady(userId: string): boolean {

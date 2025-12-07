@@ -38,6 +38,9 @@ async function initDatabase() {
     console.log('  - blast_recipients');
     console.log('  - message_templates');
     console.log('  - settings');
+    console.log('  - user_settings (per-user)');
+    console.log('  - notifications (per-user)');
+    console.log('  - inbox_messages (per-user)');
     
     console.log('\n✓ Database is ready to use.');
     console.log('\nNote: Each user will have their own contacts, groups, and blast jobs.');
