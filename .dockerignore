@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build outputs
+dist/
+build/
+server/dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+server/.env
+server/.env.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+server/logs/
+
+# Testing
+coverage/
+.nyc_output/
+server/coverage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# WhatsApp session data (will be volume-mounted)
+server/wa-session/
+server/.wwebjs_cache/
+server/.wwebjs_auth/
+
+# Uploads (will be volume-mounted)
+server/uploads/
+
+# Development
+.factory/
+*.md
+README.md
+LICENSE
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Docker
+docker-compose*.yml
+Dockerfile
+.dockerignore

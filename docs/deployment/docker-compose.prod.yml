@@ -1,0 +1,183 @@
+# Konfigurasi Docker Compose untuk Production
+# Penggunaan: docker-compose -f docker-compose.prod.yml up -d
+
+version: '3.8'
+
+services:
+  # Database MySQL
+  mysql:
+    image: mysql:8.0
+    container_name: wa-blast-mysql-prod
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-wa_blast_pro}
+      MYSQL_USER: ${DB_USER:-wa_blast_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./server/database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./backups/mysql:/backups
+    ports:
+      - "127.0.0.1:3307:3306"  # Hanya localhost yang bisa akses
+    networks:
+      - wa-blast-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: wa-blast-redis-prod
+    restart: always
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+      - ./backups/redis:/backups
+    ports:
+      - "127.0.0.1:6380:6379"  # Hanya localhost
+    networks:
+      - wa-blast-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Aplikasi Backend + Frontend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    image: wa-blast-pro:${VERSION:-latest}
+    container_name: wa-blast-app-prod
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3001"  # Hanya localhost, nginx yang akan proxy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRY: ${JWT_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      PASSWORD_PEPPER: ${PASSWORD_PEPPER}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      HELMET_ENABLED: ${HELMET_ENABLED:-true}
+      ENABLE_HTTPS: ${ENABLE_HTTPS:-true}
+      # Optional: Sentry untuk error tracking
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    volumes:
+      - ./server/logs:/app/logs:rw
+      - ./server/wa-session:/app/wa-session:rw
+      - wa-uploads:/app/uploads:rw
+      - ./backups/app:/backups:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - wa-blast-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Perlu write untuk wa-session dan logs
+    tmpfs:
+      - /tmp
+
+# Volumes untuk data persistent
+volumes:
+  mysql_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /www/wwwroot/wa-blast-pro/data/mysql
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /www/wwwroot/wa-blast-pro/data/redis
+  wa-uploads:
+    driver: local
+
+# Network isolated untuk services
+networks:
+  wa-blast-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Catatan:
+# - Semua service hanya expose ke localhost (127.0.0.1)
+# - Nginx akan bertindak sebagai reverse proxy
+# - Resource limits dikonfigurasi untuk optimasi
+# - Health checks memastikan service ready sebelum accept traffic
+# - Logging dikonfigurasi dengan rotation
+# - Volumes persistent untuk data penting

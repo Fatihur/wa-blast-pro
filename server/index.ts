@@ -1,8 +1,8 @@
 import express from 'express';
-import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
+import compression from 'compression';
 import { whatsappSessionManager } from './services/whatsappSessionManager.js';
 import { blastQueue } from './services/blastQueue.js';
 import { schedulerService } from './services/schedulerService.js';
@@ -16,8 +16,22 @@ import chatRoutes from './routes/chat.js';
 import { ConnectionStatus } from './types.js';
 import { testConnection } from './config/database.js';
 import { authService } from './services/authService.js';
+import { logger, stream } from './config/logger.js';
+import { helmetConfig, corsConfig, enforceHTTPS, sanitizeBody, requestId, securityLogger } from './middleware/security.js';
+import { apiLimiter } from './middleware/rateLimiter.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import morgan from 'morgan';
 
+// Load environment variables
 dotenv.config();
+
+// Validate critical environment variables
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'CHANGE_THIS_TO_SECURE_RANDOM_64_BYTE_STRING_IN_PRODUCTION') {
+  logger.error('CRITICAL: JWT_SECRET is not set or using default value!');
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -30,12 +44,29 @@ const io = new Server(httpServer, {
   }
 });
 
-app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
-  credentials: true
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Trust proxy (for rate limiting and HTTPS detection)
+app.set('trust proxy', 1);
+
+// Security middleware
+if (process.env.HELMET_ENABLED !== 'false') {
+  app.use(helmetConfig);
+}
+app.use(corsConfig());
+app.use(enforceHTTPS);
+
+// Request processing middleware
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(sanitizeBody);
+
+// Logging middleware
+app.use(morgan('combined', { stream }));
+app.use(requestId);
+app.use(securityLogger);
+
+// Rate limiting
+app.use('/api/', apiLimiter);
 
 app.use('/uploads', express.static('uploads'));
 
@@ -47,12 +78,41 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/header', headerRoutes);
 app.use('/api/chat', chatRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    timestamp: new Date().toISOString()
-  });
+// Health check endpoint with detailed status
+app.get('/api/health', async (req, res) => {
+  try {
+    const dbHealthy = await testConnection();
+    const health = {
+      status: dbHealthy ? 'ok' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV || 'development',
+      checks: {
+        database: dbHealthy ? 'healthy' : 'unhealthy',
+        whatsapp: 'healthy', // Could add actual check
+        memory: {
+          used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+          total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+          unit: 'MB'
+        }
+      }
+    };
+    
+    res.status(dbHealthy ? 200 : 503).json(health);
+  } catch (error) {
+    res.status(503).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: 'Health check failed'
+    });
+  }
 });
+
+// 404 handler - must be after all routes
+app.use(notFoundHandler);
+
+// Global error handler - must be last
+app.use(errorHandler);
 
 // Socket.io authentication middleware
 io.use(async (socket, next) => {
