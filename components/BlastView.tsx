@@ -2,8 +2,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { generateBlastMessage } from '../services/geminiService';
 import { Send, Paperclip, Image as ImageIcon, FileText, Sparkles, X, Users, Search, Check, ChevronRight, Edit2, User, Type, UploadCloud, Trash2, Loader2, ChevronDown, Bold, Italic, Strikethrough, Code, Pause, Play, AlertCircle, CheckCircle, XCircle, BarChart3, MapPin, Plus, Minus, UsersRound } from 'lucide-react';
-import { MessageType, Group, Contact, WhatsAppGroup } from '../types';
-import { blastApi, contactsApi, whatsappApi } from '../services/api';
+import { MessageType, Group, Contact } from '../types';
+import { blastApi, contactsApi, whatsappApi, settingsApi, normalizeSettings } from '../services/api';
 
 interface BlastJob {
   id: string;
@@ -51,6 +51,8 @@ const BlastView: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [blastError, setBlastError] = useState<string | null>(null);
   const [waConnected, setWaConnected] = useState(false);
+  const [waStatus, setWaStatus] = useState('DISCONNECTED');
+  const [defaultDelayMs, setDefaultDelayMs] = useState(3000);
 
   // Poll State
   const [pollQuestion, setPollQuestion] = useState('');
@@ -61,20 +63,15 @@ const BlastView: React.FC = () => {
   const [locationLng, setLocationLng] = useState('');
   const [locationDesc, setLocationDesc] = useState('');
 
-  // WhatsApp Groups State
-  const [waGroups, setWaGroups] = useState<WhatsAppGroup[]>([]);
-  const [selectedWaGroupIds, setSelectedWaGroupIds] = useState<Set<string>>(new Set());
-  const [isLoadingWaGroups, setIsLoadingWaGroups] = useState(false);
-  const [blastTarget, setBlastTarget] = useState<'contacts' | 'wagroups'>('contacts');
-
   // Load contacts and groups from database
   useEffect(() => {
     const loadData = async () => {
       setIsLoadingData(true);
       try {
-        const [contactsRes, groupsRes] = await Promise.all([
+        const [contactsRes, groupsRes, settingsRes] = await Promise.all([
           contactsApi.getAll(),
-          contactsApi.getGroups()
+          contactsApi.getGroups(),
+          settingsApi.getAll()
         ]);
         
         if (contactsRes.success) {
@@ -82,6 +79,9 @@ const BlastView: React.FC = () => {
         }
         if (groupsRes.success) {
           setGroups(groupsRes.groups);
+        }
+        if (settingsRes.success) {
+          setDefaultDelayMs(normalizeSettings(settingsRes.settings).defaultDelayMs);
         }
       } catch (err) {
         console.error('Failed to load contacts/groups:', err);
@@ -97,37 +97,17 @@ const BlastView: React.FC = () => {
     const checkConnection = async () => {
       try {
         const status = await whatsappApi.getStatus();
+        setWaStatus(status.status);
         setWaConnected(status.status === 'READY');
       } catch {
         setWaConnected(false);
+        setWaStatus('DISCONNECTED');
       }
     };
     checkConnection();
     const interval = setInterval(checkConnection, 5000);
     return () => clearInterval(interval);
   }, []);
-
-  // Load WhatsApp Groups when connected and target is wagroups
-  const loadWaGroups = async () => {
-    if (!waConnected) return;
-    setIsLoadingWaGroups(true);
-    try {
-      const result = await whatsappApi.getWhatsAppGroups();
-      if (result.success) {
-        setWaGroups(result.groups);
-      }
-    } catch (err) {
-      console.error('Failed to load WA groups:', err);
-    } finally {
-      setIsLoadingWaGroups(false);
-    }
-  };
-
-  useEffect(() => {
-    if (blastTarget === 'wagroups' && waConnected) {
-      loadWaGroups();
-    }
-  }, [blastTarget, waConnected]);
 
   // Poll option handlers
   const addPollOption = () => {
@@ -421,7 +401,7 @@ const BlastView: React.FC = () => {
       formData.append('type', messageType);
       formData.append('content', message);
       formData.append('recipients', JSON.stringify(recipients));
-      formData.append('delayMs', '3000');
+      formData.append('delayMs', String(defaultDelayMs));
 
       if (selectedFile) {
         formData.append('media', selectedFile);
@@ -501,23 +481,46 @@ const BlastView: React.FC = () => {
   };
 
   return (
-    <div className="p-4 md:p-8 max-w-6xl mx-auto pb-24 relative">
+    <div className="p-4 md:p-8 max-w-6xl mx-auto pb-28 md:pb-24 relative">
         <div className="mb-6 md:mb-8">
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">New Blast</h1>
-          <p className="text-sm md:text-base text-gray-500 mt-1">Create and schedule your bulk messages.</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Blast Baru</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Susun pesan, pilih audiens, lalu kirim campaign massal dengan alur yang lebih ringkas.</p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
             
             {/* Configuration Column */}
             <div className="lg:col-span-2 space-y-6">
+                <div className="lg:hidden bg-white border border-gray-100 rounded-3xl p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-4">
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Ringkasan cepat</p>
+                            <h3 className="mt-1 text-lg font-bold text-gray-900">Siap kirim ke {targetCount} penerima</h3>
+                        </div>
+                        <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${waConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                            {waConnected ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+                            {waConnected ? 'WA aktif' : 'WA belum siap'}
+                        </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl bg-gray-50 px-4 py-3">
+                            <p className="text-xs text-gray-400">Tipe pesan</p>
+                            <p className="mt-1 font-semibold text-gray-900">{messageType}</p>
+                        </div>
+                        <div className="rounded-2xl bg-gray-50 px-4 py-3">
+                            <p className="text-xs text-gray-400">Jeda default</p>
+                            <p className="mt-1 font-semibold text-gray-900">{Math.round(defaultDelayMs / 1000)} detik</p>
+                        </div>
+                    </div>
+                </div>
                 
                 {/* Audience Selection */}
                 <div className="bg-white p-5 md:p-6 rounded-3xl border border-gray-100 shadow-sm">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">1. Select Audience</h3>
+                    <h3 className="text-lg font-bold text-gray-800 mb-4">1. Pilih Audiens</h3>
                     <div className="space-y-3">
                         {/* Option: All Contacts */}
-                        <label className={`flex items-center p-3 border rounded-xl cursor-pointer transition-all ${audienceType === 'all' ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' : 'border-gray-200 hover:bg-gray-50'}`}>
+                        <label className={`flex items-start p-3 border rounded-xl cursor-pointer transition-all ${audienceType === 'all' ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' : 'border-gray-200 hover:bg-gray-50'}`}>
                             <input 
                                 type="radio" 
                                 name="audience" 
@@ -525,10 +528,10 @@ const BlastView: React.FC = () => {
                                 checked={audienceType === 'all'}
                                 onChange={() => setAudienceType('all')}
                             />
-                            <div className="ml-3">
-                                <span className="block font-medium text-gray-800">All Contacts</span>
+                            <div className="ml-3 min-w-0">
+                                <span className="block font-medium text-gray-800">Semua kontak</span>
                                 <span className="block text-sm text-gray-500">
-                                    {isLoadingData ? 'Loading...' : `Send to everyone (${totalContacts} contacts)`}
+                                    {isLoadingData ? 'Memuat...' : `Kirim ke seluruh database (${totalContacts} kontak)`}
                                 </span>
                             </div>
                         </label>
@@ -540,7 +543,7 @@ const BlastView: React.FC = () => {
                                 if (audienceType !== 'specific') openAudienceModal();
                             }}
                         >
-                            <div className="flex items-center w-full">
+                            <div className="flex items-start w-full gap-3">
                                 <input 
                                     type="radio" 
                                     name="audience" 
@@ -548,9 +551,9 @@ const BlastView: React.FC = () => {
                                     checked={audienceType === 'specific'}
                                     onChange={() => {}} // Handled by parent div
                                 />
-                                <div className="ml-3 flex-1">
-                                    <span className="block font-medium text-gray-800">Specific Audience</span>
-                                    <span className="block text-sm text-gray-500">Select specific groups or contacts</span>
+                                <div className="flex-1 min-w-0">
+                                    <span className="block font-medium text-gray-800">Audiens tertentu</span>
+                                    <span className="block text-sm text-gray-500">Pilih grup atau kontak tertentu</span>
                                 </div>
                                 {audienceType === 'specific' && (
                                     <button 
@@ -558,9 +561,9 @@ const BlastView: React.FC = () => {
                                             e.stopPropagation();
                                             openAudienceModal();
                                         }}
-                                        className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors"
+                                        className="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors"
                                     >
-                                        <Edit2 size={12} /> Edit
+                                        <Edit2 size={12} /> Ubah
                                     </button>
                                 )}
                             </div>
@@ -570,22 +573,22 @@ const BlastView: React.FC = () => {
                                 <div className="mt-3 ml-8 flex flex-wrap gap-2 items-center">
                                     {selectedGroupIds.size > 0 && (
                                         <span className="inline-flex items-center px-2 py-1 rounded-md bg-indigo-100 text-indigo-700 text-xs font-medium">
-                                            {selectedGroupIds.size} Groups
+                                            {selectedGroupIds.size} grup
                                         </span>
                                     )}
                                     {selectedContactIds.size > 0 && (
                                         <span className="inline-flex items-center px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 text-xs font-medium">
-                                            {selectedContactIds.size} Contacts
+                                            {selectedContactIds.size} kontak
                                         </span>
                                     )}
                                     <span className="text-xs text-gray-500">
-                                        = {targetCount} unique recipients
+                                        = {targetCount} penerima unik
                                     </span>
                                 </div>
                             )}
                              {audienceType === 'specific' && selectedGroupIds.size === 0 && selectedContactIds.size === 0 && (
                                 <div className="mt-2 ml-8 text-xs text-red-500">
-                                    * No audience selected. Click to select groups or contacts.
+                                     * Belum ada audiens dipilih. Klik area ini untuk memilih grup atau kontak.
                                 </div>
                             )}
                         </div>
@@ -595,39 +598,39 @@ const BlastView: React.FC = () => {
                 {/* Message Composition */}
                 <div className="bg-white p-5 md:p-6 rounded-3xl border border-gray-100 shadow-sm">
                     <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-6 gap-4">
-                        <h3 className="text-lg font-bold text-gray-800">2. Compose Message</h3>
+                        <h3 className="text-lg font-bold text-gray-800">2. Susun Pesan</h3>
                         
                         {/* Message Type Selector */}
-                        <div className="flex flex-wrap p-1 bg-gray-100 rounded-xl self-start gap-1">
+                        <div className="flex overflow-x-auto no-scrollbar p-1 bg-gray-100 rounded-xl self-start gap-1 max-w-full">
                             <button 
                                 onClick={() => handleMessageTypeChange(MessageType.TEXT)}
-                                className={`px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.TEXT ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                className={`shrink-0 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.TEXT ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                             >
-                                <Type size={14} /> Text
+                                <Type size={14} /> Teks
                             </button>
                             <button 
                                 onClick={() => handleMessageTypeChange(MessageType.IMAGE)}
-                                className={`px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.IMAGE ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                className={`shrink-0 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.IMAGE ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                             >
-                                <ImageIcon size={14} /> Image
+                                <ImageIcon size={14} /> Gambar
                             </button>
                             <button 
                                 onClick={() => handleMessageTypeChange(MessageType.DOCUMENT)}
-                                className={`px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.DOCUMENT ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                className={`shrink-0 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.DOCUMENT ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                             >
-                                <FileText size={14} /> Doc
+                                <FileText size={14} /> Dokumen
                             </button>
                             <button 
                                 onClick={() => handleMessageTypeChange(MessageType.POLL)}
-                                className={`px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.POLL ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                className={`shrink-0 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.POLL ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                             >
-                                <BarChart3 size={14} /> Poll
+                                <BarChart3 size={14} /> Polling
                             </button>
                             <button 
                                 onClick={() => handleMessageTypeChange(MessageType.LOCATION)}
-                                className={`px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.LOCATION ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                className={`shrink-0 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-all ${messageType === MessageType.LOCATION ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                             >
-                                <MapPin size={14} /> Location
+                                <MapPin size={14} /> Lokasi
                             </button>
                         </div>
                     </div>
@@ -644,20 +647,20 @@ const BlastView: React.FC = () => {
                             />
                             
                             {!selectedFile ? (
-                                <div 
+                                 <div 
                                     onClick={() => fileInputRef.current?.click()}
                                     className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors ${messageType === MessageType.IMAGE ? 'border-emerald-200 bg-emerald-50/30 hover:bg-emerald-50/60' : 'border-blue-200 bg-blue-50/30 hover:bg-blue-50/60'}`}
-                                >
+                                 >
                                     <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 ${messageType === MessageType.IMAGE ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
                                         <UploadCloud size={24} />
                                     </div>
-                                    <p className="font-medium text-gray-700">
-                                        Click to upload {messageType === MessageType.IMAGE ? 'Image' : 'Document'}
-                                    </p>
-                                    <p className="text-xs text-gray-400 mt-1">
-                                        {messageType === MessageType.IMAGE ? 'JPG, PNG up to 5MB' : 'PDF, DOC, XLS up to 10MB'}
-                                    </p>
-                                </div>
+                                     <p className="font-medium text-gray-700 text-center">
+                                         Klik untuk upload {messageType === MessageType.IMAGE ? 'gambar' : 'dokumen'}
+                                     </p>
+                                     <p className="text-xs text-gray-400 mt-1">
+                                         {messageType === MessageType.IMAGE ? 'JPG, PNG hingga 5MB' : 'PDF, DOC, XLS hingga 10MB'}
+                                     </p>
+                                 </div>
                             ) : (
                                 <div className="p-4 border border-gray-200 rounded-2xl flex items-center justify-between bg-gray-50">
                                     <div className="flex items-center gap-4">
@@ -683,22 +686,22 @@ const BlastView: React.FC = () => {
                     {/* Poll Input */}
                     {messageType === MessageType.POLL && (
                         <div className="mb-4 p-4 border border-purple-200 rounded-2xl bg-purple-50/30">
-                            <h4 className="font-bold text-purple-800 mb-3 flex items-center gap-2">
-                                <BarChart3 size={18} /> Create Poll
-                            </h4>
+                                <h4 className="font-bold text-purple-800 mb-3 flex items-center gap-2">
+                                    <BarChart3 size={18} /> Buat polling
+                                </h4>
                             <div className="space-y-3">
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Question</label>
+                                     <label className="block text-sm font-medium text-gray-700 mb-1">Pertanyaan</label>
                                     <input
                                         type="text"
                                         value={pollQuestion}
                                         onChange={(e) => setPollQuestion(e.target.value)}
-                                        placeholder="What's your favorite...?"
+                                         placeholder="Apa pilihan favorit kamu...?"
                                         className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Options (min 2, max 12)</label>
+                                     <label className="block text-sm font-medium text-gray-700 mb-1">Opsi (min 2, maks 12)</label>
                                     <div className="space-y-2">
                                         {pollOptions.map((option, index) => (
                                             <div key={index} className="flex gap-2">
@@ -706,7 +709,7 @@ const BlastView: React.FC = () => {
                                                     type="text"
                                                     value={option}
                                                     onChange={(e) => updatePollOption(index, e.target.value)}
-                                                    placeholder={`Option ${index + 1}`}
+                                                    placeholder={`Opsi ${index + 1}`}
                                                     className="flex-1 px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
                                                 />
                                                 {pollOptions.length > 2 && (
@@ -724,9 +727,9 @@ const BlastView: React.FC = () => {
                                         <button
                                             onClick={addPollOption}
                                             className="mt-2 px-4 py-2 text-purple-600 hover:bg-purple-100 rounded-xl text-sm font-medium flex items-center gap-1"
-                                        >
-                                            <Plus size={16} /> Add Option
-                                        </button>
+                                         >
+                                            <Plus size={16} /> Tambah opsi
+                                         </button>
                                     )}
                                 </div>
                             </div>
@@ -736,10 +739,10 @@ const BlastView: React.FC = () => {
                     {/* Location Input */}
                     {messageType === MessageType.LOCATION && (
                         <div className="mb-4 p-4 border border-orange-200 rounded-2xl bg-orange-50/30">
-                            <h4 className="font-bold text-orange-800 mb-3 flex items-center gap-2">
-                                <MapPin size={18} /> Send Location
-                            </h4>
-                            <div className="grid grid-cols-2 gap-3">
+                                <h4 className="font-bold text-orange-800 mb-3 flex items-center gap-2">
+                                    <MapPin size={18} /> Kirim lokasi
+                                </h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 mb-1">Latitude</label>
                                     <input
@@ -761,18 +764,18 @@ const BlastView: React.FC = () => {
                                     />
                                 </div>
                                 <div className="col-span-2">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+                                     <label className="block text-sm font-medium text-gray-700 mb-1">Deskripsi (opsional)</label>
                                     <input
                                         type="text"
                                         value={locationDesc}
                                         onChange={(e) => setLocationDesc(e.target.value)}
-                                        placeholder="Our Office Location"
+                                        placeholder="Lokasi kantor / titik temu"
                                         className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
                                     />
                                 </div>
                             </div>
                             <p className="text-xs text-gray-500 mt-2">
-                                Tip: Get coordinates from Google Maps by right-clicking on a location
+                                 Tips: ambil koordinat dari Google Maps dengan klik kanan pada titik lokasi
                             </p>
                         </div>
                     )}
@@ -795,7 +798,7 @@ const BlastView: React.FC = () => {
                        </div>
 
                        {/* Controls */}
-                       <div className="relative z-10 flex flex-col md:flex-row gap-3">
+                            <div className="relative z-10 flex flex-col md:flex-row gap-3">
                            <div className="flex-1">
                                <input
                                    type="text"
@@ -805,8 +808,8 @@ const BlastView: React.FC = () => {
                                    onChange={(e) => setTopic(e.target.value)}
                                />
                            </div>
-                           <div className="flex gap-2">
-                               <div className="relative min-w-[120px]">
+                            <div className="flex flex-col sm:flex-row gap-2">
+                                <div className="relative min-w-[120px]">
                                    <select
                                        className="w-full h-11 pl-4 pr-8 rounded-xl border-0 ring-1 ring-indigo-200 focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm appearance-none cursor-pointer text-sm font-medium text-indigo-900 transition-all"
                                        value={tone}
@@ -841,7 +844,7 @@ const BlastView: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2 mb-2 p-2 bg-gray-50 rounded-xl border border-gray-100">
                         {/* Variables */}
                         <div className="flex items-center gap-2 border-r border-gray-200 pr-2 mr-1">
-                            <span className="text-xs font-bold text-gray-400 uppercase px-1">Vars</span>
+                            <span className="text-xs font-bold text-gray-400 uppercase px-1">Variabel</span>
                             <button 
                                 onClick={() => insertText('{name}')}
                                 className="px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm"
@@ -877,13 +880,13 @@ const BlastView: React.FC = () => {
                     <div className="relative">
                         <textarea
                             ref={textAreaRef}
-                            className="w-full h-48 p-4 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all resize-none text-base text-gray-700 font-sans"
-                            placeholder={messageType === MessageType.TEXT ? "Type your message here or generate one with AI..." : "Add a caption (optional)..."}
-                            value={message}
-                            onChange={(e) => setMessage(e.target.value)}
+                             className="w-full h-44 md:h-48 p-4 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all resize-none text-base text-gray-700 font-sans"
+                             placeholder={messageType === MessageType.TEXT ? "Tulis pesan di sini atau gunakan AI untuk membuat draft..." : "Tambahkan caption (opsional)..."}
+                             value={message}
+                             onChange={(e) => setMessage(e.target.value)}
                         ></textarea>
                         <div className="absolute bottom-3 right-3 text-xs text-gray-400">
-                            {message.length} chars
+                            {message.length} karakter
                         </div>
                     </div>
                     </>
@@ -893,9 +896,12 @@ const BlastView: React.FC = () => {
             </div>
 
             {/* Preview & Action Column */}
-            <div className="space-y-6">
-                 <div className="bg-white p-5 md:p-6 rounded-3xl border border-gray-100 shadow-sm h-full flex flex-col">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">Preview</h3>
+            <div className="space-y-6 lg:sticky lg:top-24 self-start">
+                  <div className="bg-white p-5 md:p-6 rounded-3xl border border-gray-100 shadow-sm h-full flex flex-col">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <h3 className="text-lg font-bold text-gray-800">Preview</h3>
+                      <span className="text-xs text-gray-400">Estimasi {Math.ceil(targetCount * (defaultDelayMs / 1000) / 60)} menit</span>
+                    </div>
                     
                     {/* WhatsApp Phone Mockup */}
                     <div className="flex-1 bg-gray-100 rounded-2xl border-4 border-gray-800 p-2 relative overflow-hidden min-h-[400px]">
@@ -925,7 +931,7 @@ const BlastView: React.FC = () => {
                                         </div>
                                     )}
                                     <p className="text-sm text-gray-800 whitespace-pre-wrap break-words">
-                                        {message || <span className="text-gray-400 italic">Your message will appear here...</span>}
+                                        {message || <span className="text-gray-400 italic">Isi pesan akan muncul di sini...</span>}
                                     </p>
                                     <p className="text-[10px] text-gray-500 text-right mt-1">14:30</p>
                                 </div>
@@ -937,7 +943,7 @@ const BlastView: React.FC = () => {
                         {/* Connection Status */}
                         <div className={`flex items-center justify-center gap-2 text-sm py-2 px-3 rounded-lg ${waConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
                             {waConnected ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-                            {waConnected ? 'WhatsApp Connected' : 'WhatsApp Not Connected'}
+                            {waConnected ? 'WhatsApp terhubung' : 'WhatsApp belum terhubung'}
                         </div>
 
                         {/* Error Message */}
@@ -948,14 +954,21 @@ const BlastView: React.FC = () => {
                             </div>
                         )}
 
+                        {!waConnected && waStatus === 'AUTHENTICATED' && (
+                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-sm flex items-center gap-2">
+                                <Loader2 size={16} className="animate-spin" />
+                                WhatsApp sudah login, tetapi sesi belum sepenuhnya siap untuk kirim pesan. Tunggu sebentar.
+                            </div>
+                        )}
+
                         {/* Progress Bar (when job is running) */}
                         {currentJob && (
                             <div className="bg-gray-50 rounded-xl p-4">
                                 <div className="flex items-center justify-between mb-2">
                                     <span className="text-sm font-medium text-gray-700">
-                                        {currentJob.status === 'running' ? 'Sending...' : 
-                                         currentJob.status === 'paused' ? 'Paused' :
-                                         currentJob.status === 'completed' ? 'Completed!' : 'Failed'}
+                                        {currentJob.status === 'running' ? 'Mengirim...' : 
+                                         currentJob.status === 'paused' ? 'Dijeda' :
+                                         currentJob.status === 'completed' ? 'Selesai!' : 'Gagal'}
                                     </span>
                                     <span className="text-sm text-gray-500">
                                         {currentJob.progress.sent + currentJob.progress.failed} / {currentJob.progress.total}
@@ -968,20 +981,20 @@ const BlastView: React.FC = () => {
                                     ></div>
                                 </div>
                                 <div className="flex items-center justify-between text-xs text-gray-500">
-                                    <span className="text-emerald-600">{currentJob.progress.sent} sent</span>
+                                    <span className="text-emerald-600">{currentJob.progress.sent} terkirim</span>
                                     {currentJob.progress.failed > 0 && (
-                                        <span className="text-red-600">{currentJob.progress.failed} failed</span>
+                                        <span className="text-red-600">{currentJob.progress.failed} gagal</span>
                                     )}
                                 </div>
                                 
                                 {/* Control Buttons */}
-                                <div className="flex gap-2 mt-3">
+                                <div className="flex flex-col sm:flex-row gap-2 mt-3">
                                     {currentJob.status === 'running' && (
                                         <button 
                                             onClick={handlePauseBlast}
                                             className="flex-1 py-2 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 rounded-lg font-medium flex items-center justify-center gap-2"
                                         >
-                                            <Pause size={16} /> Pause
+                                            <Pause size={16} /> Jeda
                                         </button>
                                     )}
                                     {currentJob.status === 'paused' && (
@@ -989,7 +1002,7 @@ const BlastView: React.FC = () => {
                                             onClick={handleResumeBlast}
                                             className="flex-1 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg font-medium flex items-center justify-center gap-2"
                                         >
-                                            <Play size={16} /> Resume
+                                            <Play size={16} /> Lanjutkan
                                         </button>
                                     )}
                                     {(currentJob.status === 'running' || currentJob.status === 'paused') && (
@@ -997,7 +1010,7 @@ const BlastView: React.FC = () => {
                                             onClick={handleCancelBlast}
                                             className="flex-1 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium flex items-center justify-center gap-2"
                                         >
-                                            <XCircle size={16} /> Cancel
+                                            <XCircle size={16} /> Batalkan
                                         </button>
                                     )}
                                     {(currentJob.status === 'completed' || currentJob.status === 'failed') && (
@@ -1005,7 +1018,7 @@ const BlastView: React.FC = () => {
                                             onClick={resetBlast}
                                             className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium"
                                         >
-                                            New Blast
+                                            Blast baru
                                         </button>
                                     )}
                                 </div>
@@ -1021,9 +1034,9 @@ const BlastView: React.FC = () => {
                                     className="w-full bg-emerald-900 hover:bg-emerald-800 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20 transition-all transform active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {isSending ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
-                                    {isSending ? 'Creating Job...' : `Send Blast (${targetCount})`}
+                                    {isSending ? 'Membuat job...' : `Kirim blast (${targetCount})`}
                                 </button>
-                                <p className="text-center text-xs text-gray-400">Estimated completion: {Math.ceil(targetCount * 3 / 60)} mins (3s delay per message)</p>
+                                <p className="text-center text-xs text-gray-400">Estimasi selesai: {Math.ceil(targetCount * (defaultDelayMs / 1000) / 60)} menit dengan jeda {Math.round(defaultDelayMs / 1000)} detik per pesan.</p>
                             </>
                         )}
                     </div>
@@ -1045,8 +1058,8 @@ const BlastView: React.FC = () => {
                     {/* Modal Header - Fixed */}
                     <div className="p-5 md:p-6 border-b border-gray-100 flex items-center justify-between shrink-0">
                         <div>
-                            <h3 className="text-lg md:text-xl font-bold text-gray-900">Select Audience</h3>
-                            <p className="text-sm text-gray-500">Choose who receives this message.</p>
+                            <h3 className="text-lg md:text-xl font-bold text-gray-900">Pilih Audiens</h3>
+                            <p className="text-sm text-gray-500">Tentukan siapa yang menerima pesan ini.</p>
                         </div>
                         <button 
                             onClick={() => {
@@ -1067,13 +1080,13 @@ const BlastView: React.FC = () => {
                                 onClick={() => setModalTab('groups')}
                                 className={`pb-3 pt-2 px-4 font-medium text-sm border-b-2 transition-colors ${modalTab === 'groups' ? 'text-emerald-600 border-emerald-600' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
                              >
-                                Groups ({groups.length}) {tempSelectedGroupIds.size > 0 && <span className="ml-1 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">{tempSelectedGroupIds.size}</span>}
+                                Grup ({groups.length}) {tempSelectedGroupIds.size > 0 && <span className="ml-1 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">{tempSelectedGroupIds.size}</span>}
                              </button>
                              <button 
                                 onClick={() => setModalTab('contacts')}
                                 className={`pb-3 pt-2 px-4 font-medium text-sm border-b-2 transition-colors ${modalTab === 'contacts' ? 'text-emerald-600 border-emerald-600' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
                              >
-                                Contacts ({contacts.length}) {tempSelectedContactIds.size > 0 && <span className="ml-1 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">{tempSelectedContactIds.size}</span>}
+                                Kontak ({contacts.length}) {tempSelectedContactIds.size > 0 && <span className="ml-1 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">{tempSelectedContactIds.size}</span>}
                              </button>
                         </div>
 
@@ -1083,7 +1096,7 @@ const BlastView: React.FC = () => {
                                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
                                 <input 
                                     type="text" 
-                                    placeholder={modalTab === 'groups' ? "Search groups..." : "Search contacts..."}
+                                    placeholder={modalTab === 'groups' ? "Cari grup..." : "Cari kontak..."}
                                     value={audienceSearchTerm}
                                     onChange={(e) => setAudienceSearchTerm(e.target.value)}
                                     className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
@@ -1100,7 +1113,7 @@ const BlastView: React.FC = () => {
                                     onChange={toggleAllInModal}
                                     className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                                 />
-                                Select All {modalTab === 'groups' ? 'Groups' : 'Contacts'}
+                                Pilih semua {modalTab === 'groups' ? 'grup' : 'kontak'}
                             </label>
                         </div>
 
@@ -1122,7 +1135,7 @@ const BlastView: React.FC = () => {
                                                     </div>
                                                     <div>
                                                         <h4 className={`font-semibold ${isSelected ? 'text-emerald-900' : 'text-gray-800'}`}>{group.name}</h4>
-                                                        <p className={`text-xs ${isSelected ? 'text-emerald-600' : 'text-gray-500'}`}>{group.contactIds.length} Members</p>
+                                                        <p className={`text-xs ${isSelected ? 'text-emerald-600' : 'text-gray-500'}`}>{group.contactIds.length} anggota</p>
                                                     </div>
                                                 </div>
                                                 <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300 bg-white'}`}>
@@ -1135,11 +1148,11 @@ const BlastView: React.FC = () => {
                                         <div className="text-center py-10 text-gray-400">
                                             <Users size={32} className="mx-auto mb-2 opacity-50" />
                                             {isLoadingData ? (
-                                              <p>Loading groups...</p>
+                                              <p>Memuat grup...</p>
                                             ) : groups.length === 0 ? (
-                                              <p>No groups in database. Create a group first.</p>
+                                              <p>Belum ada grup di database. Buat grup terlebih dahulu.</p>
                                             ) : (
-                                              <p>No groups match your search.</p>
+                                              <p>Tidak ada grup yang cocok dengan pencarianmu.</p>
                                             )}
                                         </div>
                                     )}
@@ -1173,11 +1186,11 @@ const BlastView: React.FC = () => {
                                         <div className="text-center py-10 text-gray-400">
                                             <User size={32} className="mx-auto mb-2 opacity-50" />
                                             {isLoadingData ? (
-                                              <p>Loading contacts...</p>
+                                              <p>Memuat kontak...</p>
                                             ) : contacts.length === 0 ? (
-                                              <p>No contacts in database. Add contacts first.</p>
+                                              <p>Belum ada kontak di database. Tambahkan kontak terlebih dahulu.</p>
                                             ) : (
-                                              <p>No contacts match your search.</p>
+                                              <p>Tidak ada kontak yang cocok dengan pencarianmu.</p>
                                             )}
                                         </div>
                                     )}
@@ -1191,14 +1204,14 @@ const BlastView: React.FC = () => {
                         <div className="flex flex-col gap-4">
                             {/* Mobile Summary Row */}
                             <div className="flex items-center justify-between md:hidden text-sm">
-                                <span className="text-gray-500">Selected:</span>
-                                <span className="font-bold text-gray-900">{tempSelectedGroupIds.size} Groups, {tempSelectedContactIds.size} Contacts</span>
+                                <span className="text-gray-500">Dipilih:</span>
+                                <span className="font-bold text-gray-900">{tempSelectedGroupIds.size} grup, {tempSelectedContactIds.size} kontak</span>
                             </div>
 
                             <div className="flex flex-col-reverse md:flex-row md:items-center md:justify-between gap-3">
                                 {/* Desktop Summary */}
                                 <div className="hidden md:block text-sm text-gray-600">
-                                    Selected: <span className="font-bold text-gray-900">{tempSelectedGroupIds.size} Groups, {tempSelectedContactIds.size} Contacts</span>
+                                    Dipilih: <span className="font-bold text-gray-900">{tempSelectedGroupIds.size} grup, {tempSelectedContactIds.size} kontak</span>
                                 </div>
                                 
                                 {/* Buttons */}
@@ -1210,13 +1223,13 @@ const BlastView: React.FC = () => {
                                         }}
                                         className="flex-1 md:flex-none px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-200 rounded-xl transition-colors"
                                     >
-                                        Cancel
+                                        Batal
                                     </button>
                                     <button 
                                         onClick={confirmAudienceSelection}
                                         className="flex-1 md:flex-none px-6 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-colors"
                                     >
-                                        Confirm Selection
+                                        Simpan pilihan
                                     </button>
                                 </div>
                             </div>

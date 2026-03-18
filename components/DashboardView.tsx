@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowUpRight, MoreHorizontal, Play, Clock, CheckCircle, XCircle, Loader2, Database, Wifi, WifiOff, RefreshCw, Zap } from 'lucide-react';
+import { ArrowUpRight, MoreHorizontal, Play, Clock, CheckCircle, XCircle, Loader2, Database, Wifi, WifiOff, RefreshCw, Zap, Smartphone, AlertCircle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { blastApi, contactsApi, DashboardStats, BlastJob } from '../services/api';
+import { authApi, blastApi, contactsApi, DashboardStats, BlastJob, whatsappApi } from '../services/api';
 import { socketService } from '../services/socket';
+import { ViewState } from '../types';
+
+type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'AUTHENTICATED' | 'READY' | 'AUTH_FAILURE';
+
+interface ClientInfo {
+  wid?: {
+    user: string;
+    _serialized: string;
+  };
+  pushname?: string;
+  platform?: string;
+}
 
 const defaultStats: DashboardStats = {
   totalSent: 0,
@@ -11,13 +23,22 @@ const defaultStats: DashboardStats = {
   failed: 0
 };
 
-const DashboardView: React.FC = () => {
+interface DashboardViewProps {
+  onChangeView: (view: ViewState) => void;
+}
+
+const DashboardView: React.FC<DashboardViewProps> = ({ onChangeView }) => {
   const [stats, setStats] = useState<DashboardStats>(defaultStats);
   const [recentJobs, setRecentJobs] = useState<BlastJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [socketConnected, setSocketConnected] = useState(false);
+  const [socketError, setSocketError] = useState<string | null>(null);
   const [totalContacts, setTotalContacts] = useState(0);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [userName, setUserName] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('DISCONNECTED');
+  const [clientInfo, setClientInfo] = useState<ClientInfo | null>(null);
+  const [serverOnline, setServerOnline] = useState(false);
   const [chartData, setChartData] = useState([
     { name: 'Mon', sent: 0 },
     { name: 'Tue', sent: 0 },
@@ -31,10 +52,12 @@ const DashboardView: React.FC = () => {
   // Load dashboard data
   const loadDashboardData = useCallback(async () => {
     try {
-      const [statsRes, historyRes, contactsRes] = await Promise.all([
+      const [statsRes, historyRes, contactsRes, authRes, whatsappStatus] = await Promise.all([
         blastApi.getDashboardStats(),
         blastApi.getHistory(10),
-        contactsApi.getAll()
+        contactsApi.getAll(),
+        authApi.getMe(),
+        whatsappApi.getStatus(),
       ]);
       
       if (statsRes.success) {
@@ -44,6 +67,14 @@ const DashboardView: React.FC = () => {
       if (contactsRes.success) {
         setTotalContacts(contactsRes.contacts.length);
       }
+
+      if (authRes.success) {
+        setUserName(authRes.user.name || 'there');
+      }
+
+      setConnectionStatus(whatsappStatus.status as ConnectionStatus);
+      setClientInfo(whatsappStatus.clientInfo ?? null);
+      setServerOnline(true);
       
       if (historyRes.success) {
         setRecentJobs(historyRes.jobs);
@@ -64,6 +95,7 @@ const DashboardView: React.FC = () => {
       setLastUpdate(new Date());
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
+      setServerOnline(false);
     } finally {
       setIsLoading(false);
     }
@@ -80,10 +112,44 @@ const DashboardView: React.FC = () => {
 
     const handleConnected = () => {
       setSocketConnected(true);
+      setSocketError(null);
     };
 
-    const handleDisconnected = () => {
+    const handleDisconnected = (reason?: string) => {
       setSocketConnected(false);
+      if (reason && reason !== 'io client disconnect') {
+        setSocketError(`Socket terputus: ${reason}`);
+      }
+    };
+
+    const handleConnectionError = (message: string) => {
+      setSocketConnected(false);
+      setSocketError(message);
+    };
+
+    const handleWhatsAppStatus = (data: { status: ConnectionStatus; clientInfo?: ClientInfo | null }) => {
+      setConnectionStatus(data.status);
+      setClientInfo(data.clientInfo ?? null);
+      setServerOnline(true);
+      setLastUpdate(new Date());
+    };
+
+    const handleWhatsAppReady = (data: { clientInfo?: ClientInfo | null }) => {
+      setConnectionStatus('READY');
+      setClientInfo(data.clientInfo ?? null);
+      setServerOnline(true);
+      setLastUpdate(new Date());
+    };
+
+    const handleWhatsAppDisconnected = () => {
+      setConnectionStatus('DISCONNECTED');
+      setClientInfo(null);
+      setLastUpdate(new Date());
+    };
+
+    const handleWhatsAppAuthFailure = () => {
+      setConnectionStatus('AUTH_FAILURE');
+      setLastUpdate(new Date());
     };
 
     const handleBlastProgress = (data: any) => {
@@ -137,6 +203,11 @@ const DashboardView: React.FC = () => {
 
     socketService.on('connected', handleConnected);
     socketService.on('disconnected', handleDisconnected);
+    socketService.on('connection_error', handleConnectionError);
+    socketService.on('whatsapp_status', handleWhatsAppStatus);
+    socketService.on('whatsapp_ready', handleWhatsAppReady);
+    socketService.on('whatsapp_disconnected', handleWhatsAppDisconnected);
+    socketService.on('whatsapp_auth_failure', handleWhatsAppAuthFailure);
     socketService.on('blast_progress', handleBlastProgress);
     socketService.on('blast_job_started', handleJobStarted);
     socketService.on('blast_job_completed', handleJobCompleted);
@@ -146,6 +217,11 @@ const DashboardView: React.FC = () => {
     return () => {
       socketService.off('connected', handleConnected);
       socketService.off('disconnected', handleDisconnected);
+      socketService.off('connection_error', handleConnectionError);
+      socketService.off('whatsapp_status', handleWhatsAppStatus);
+      socketService.off('whatsapp_ready', handleWhatsAppReady);
+      socketService.off('whatsapp_disconnected', handleWhatsAppDisconnected);
+      socketService.off('whatsapp_auth_failure', handleWhatsAppAuthFailure);
       socketService.off('blast_progress', handleBlastProgress);
       socketService.off('blast_job_started', handleJobStarted);
       socketService.off('blast_job_completed', handleJobCompleted);
@@ -168,14 +244,60 @@ const DashboardView: React.FC = () => {
     return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
+  const currentHour = new Date().getHours();
+  const greeting = currentHour < 12 ? 'Selamat pagi' : currentHour < 18 ? 'Selamat siang' : 'Selamat malam';
+
+  const connectionMeta: Record<ConnectionStatus, { label: string; tone: string; detail: string; icon: React.ReactNode }> = {
+    DISCONNECTED: {
+      label: 'Belum terhubung',
+      tone: 'bg-gray-100 text-gray-700 border-gray-200',
+      detail: 'Hubungkan WhatsApp untuk mulai mengirim blast dan menerima update realtime.',
+      icon: <WifiOff size={16} />,
+    },
+    CONNECTING: {
+      label: 'Sedang menghubungkan',
+      tone: 'bg-amber-50 text-amber-700 border-amber-200',
+      detail: 'Server sedang menyiapkan sesi WhatsApp kamu.',
+      icon: <Loader2 size={16} className="animate-spin" />,
+    },
+    QR_READY: {
+      label: 'Menunggu scan QR / pairing',
+      tone: 'bg-sky-50 text-sky-700 border-sky-200',
+      detail: 'Buka menu koneksi untuk scan QR code atau masukkan pairing code.',
+      icon: <Smartphone size={16} />,
+    },
+    AUTHENTICATED: {
+      label: 'Autentikasi berhasil',
+      tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      detail: 'Sesi sudah valid dan sedang menyelesaikan sinkronisasi perangkat.',
+      icon: <CheckCircle size={16} />,
+    },
+    READY: {
+      label: 'Terhubung',
+      tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      detail: clientInfo?.wid?.user
+        ? `Perangkat aktif di nomor +${clientInfo.wid.user}. Siap kirim pesan.`
+        : 'Perangkat WhatsApp aktif dan siap digunakan.',
+      icon: <Wifi size={16} />,
+    },
+    AUTH_FAILURE: {
+      label: 'Autentikasi gagal',
+      tone: 'bg-red-50 text-red-700 border-red-200',
+      detail: 'Sesi perlu dihubungkan ulang dari halaman koneksi.',
+      icon: <AlertCircle size={16} />,
+    },
+  };
+
+  const activeConnection = connectionMeta[connectionStatus];
+
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6 md:space-y-8 pb-20">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6 md:space-y-8 pb-28 md:pb-20">
       
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm md:text-base text-gray-500 mt-1">Monitor your campaigns and connection status.</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Ringkasan</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Pantau performa blast, kesiapan perangkat, dan aktivitas terbaru dalam satu tempat.</p>
         </div>
         
         {/* Realtime Status Indicator */}
@@ -190,12 +312,12 @@ const DashboardView: React.FC = () => {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                 </span>
                 <Zap size={14} />
-                Realtime
+                 Realtime aktif
               </>
             ) : (
               <>
                 <WifiOff size={14} />
-                Offline
+                 Realtime offline
               </>
             )}
           </div>
@@ -209,7 +331,82 @@ const DashboardView: React.FC = () => {
           </button>
           
           <div className="text-xs text-gray-400">
-            Updated: {formatTime(lastUpdate)}
+            Diperbarui: {formatTime(lastUpdate)}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1.5fr_1fr] gap-4 md:gap-6">
+        <div className="relative overflow-hidden rounded-3xl bg-[linear-gradient(135deg,#052e2b_0%,#0f766e_48%,#99f6e4_130%)] p-6 md:p-8 text-white shadow-xl">
+          <div className="absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/10 blur-2xl"></div>
+          <div className="absolute bottom-0 right-10 h-28 w-28 rounded-full bg-emerald-200/20 blur-2xl"></div>
+          <div className="relative max-w-2xl space-y-3">
+            <p className="text-sm font-medium uppercase tracking-[0.24em] text-emerald-100/80">Welcome</p>
+            <div>
+              <h2 className="text-2xl md:text-4xl font-bold leading-tight">{greeting}, {userName || 'teman'}.</h2>
+              <p className="mt-2 text-sm md:text-base text-emerald-50/90">
+                Pantau performa blast, cek kesiapan perangkat, dan lanjutkan campaign tanpa pindah halaman.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-3 pt-2 text-sm">
+              <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+                <div className="text-emerald-100/75">Kontak aktif</div>
+                <div className="mt-1 text-xl font-semibold">{totalContacts.toLocaleString()}</div>
+              </div>
+              <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+                <div className="text-emerald-100/75">Campaign berjalan</div>
+                <div className="mt-1 text-xl font-semibold">{recentJobs.filter(j => j.status === 'running').length}</div>
+              </div>
+              <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+                <div className="text-emerald-100/75">Pesan terkirim</div>
+                <div className="mt-1 text-xl font-semibold">{stats.totalSent.toLocaleString()}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-gray-100 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-500">Status koneksi</p>
+              <h3 className="mt-1 text-xl font-bold text-gray-900">WhatsApp Device</h3>
+            </div>
+            <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium ${activeConnection.tone}`}>
+              {activeConnection.icon}
+              {activeConnection.label}
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-4">
+            <p className="text-sm leading-6 text-gray-600">{activeConnection.detail}</p>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Server</p>
+                <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-gray-800">
+                  {serverOnline ? <Wifi size={15} className="text-emerald-600" /> : <WifiOff size={15} className="text-red-500" />}
+                  {serverOnline ? 'Online' : 'Offline'}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-400">Socket realtime</p>
+                <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-gray-800">
+                  {socketConnected ? <Zap size={15} className="text-emerald-600" /> : <WifiOff size={15} className="text-gray-400" />}
+                  {socketConnected ? 'Terhubung' : 'Terputus'}
+                </p>
+                {socketError && (
+                  <p className="mt-2 text-xs leading-5 text-red-500">{socketError}</p>
+                )}
+              </div>
+            </div>
+
+            {(clientInfo?.pushname || clientInfo?.wid?.user || clientInfo?.platform) && (
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4 text-sm text-emerald-950">
+                {clientInfo?.pushname && <p><span className="font-semibold">Device:</span> {clientInfo.pushname}</p>}
+                {clientInfo?.wid?.user && <p><span className="font-semibold">Nomor:</span> +{clientInfo.wid.user}</p>}
+                {clientInfo?.platform && <p><span className="font-semibold">Platform:</span> {clientInfo.platform}</p>}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -337,14 +534,14 @@ const DashboardView: React.FC = () => {
           {/* Live Activity Feed */}
           <div className="bg-white rounded-3xl p-5 md:p-6 border border-gray-100 shadow-sm flex flex-col">
              <div className="flex items-center justify-between mb-4">
-               <h3 className="text-lg font-bold text-gray-800">Live Activity</h3>
+             <h3 className="text-lg font-bold text-gray-800">Aktivitas Langsung</h3>
                {socketConnected && (
                  <span className="flex items-center gap-1 text-xs text-emerald-600">
                    <span className="relative flex h-2 w-2">
                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                    </span>
-                   Live
+                    Live
                  </span>
                )}
              </div>
@@ -353,7 +550,7 @@ const DashboardView: React.FC = () => {
                {recentJobs.length === 0 ? (
                  <div className="flex flex-col items-center justify-center h-full text-gray-400">
                    <Clock size={32} className="mb-2 opacity-50" />
-                   <p className="text-sm">No recent activity</p>
+                    <p className="text-sm">Belum ada aktivitas terbaru</p>
                  </div>
                ) : (
                  recentJobs.slice(0, 5).map((job, index) => {
@@ -371,11 +568,11 @@ const DashboardView: React.FC = () => {
                        className={`p-3 rounded-xl border ${statusColors[job.status]} transition-all ${job.status === 'running' ? 'animate-pulse' : ''}`}
                      >
                        <div className="flex items-center justify-between mb-1">
-                         <span className="font-medium text-sm">{job.message_type} Blast</span>
-                         <span className="text-xs capitalize">{job.status}</span>
+                          <span className="font-medium text-sm">Blast {job.message_type}</span>
+                          <span className="text-xs capitalize">{job.status}</span>
                        </div>
                        <div className="flex items-center justify-between text-xs opacity-75">
-                         <span>{job.sent_count || 0} / {job.total_recipients} sent</span>
+                          <span>{job.sent_count || 0} / {job.total_recipients} terkirim</span>
                          <span>{job.created_at ? new Date(job.created_at).toLocaleTimeString() : ''}</span>
                        </div>
                        {job.status === 'running' && (
@@ -397,8 +594,13 @@ const DashboardView: React.FC = () => {
       {/* Recent Blasts Table */}
       <div className="bg-white rounded-3xl p-5 md:p-6 border border-gray-100 shadow-sm">
         <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-bold text-gray-800">Recent Campaigns</h3>
-            <button className="text-sm font-medium text-emerald-600 hover:text-emerald-700">View All</button>
+            <h3 className="text-lg font-bold text-gray-800">Campaign Terbaru</h3>
+            <button
+              onClick={() => onChangeView('history')}
+              className="text-sm font-medium text-emerald-600 hover:text-emerald-700"
+            >
+              Buka riwayat
+            </button>
         </div>
         <div className="overflow-x-auto -mx-5 md:mx-0">
             <table className="w-full min-w-[600px] md:min-w-0">
@@ -415,11 +617,11 @@ const DashboardView: React.FC = () => {
                       <tr>
                         <td colSpan={4} className="py-8 text-center text-gray-400">
                           {isLoading ? (
-                            <div className="flex items-center justify-center gap-2">
-                              <Loader2 size={16} className="animate-spin" />
-                              Loading...
-                            </div>
-                          ) : 'No campaigns yet. Start your first blast!'}
+                              <div className="flex items-center justify-center gap-2">
+                                <Loader2 size={16} className="animate-spin" />
+                               Memuat...
+                             </div>
+                           ) : 'Belum ada campaign. Mulai blast pertama kamu.'}
                         </td>
                       </tr>
                     ) : (
@@ -430,11 +632,11 @@ const DashboardView: React.FC = () => {
                                        job.status === 'failed' ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600';
                         
                         const statusBadge = {
-                          completed: { bg: 'bg-emerald-100 text-emerald-700', icon: <CheckCircle size={12} />, text: 'Completed' },
-                          running: { bg: 'bg-yellow-100 text-yellow-700', icon: <Loader2 size={12} className="animate-spin" />, text: 'Sending' },
-                          paused: { bg: 'bg-orange-100 text-orange-700', icon: <Clock size={12} />, text: 'Paused' },
-                          failed: { bg: 'bg-red-100 text-red-700', icon: <XCircle size={12} />, text: 'Failed' },
-                          pending: { bg: 'bg-gray-100 text-gray-600', icon: <Clock size={12} />, text: 'Pending' },
+                          completed: { bg: 'bg-emerald-100 text-emerald-700', icon: <CheckCircle size={12} />, text: 'Selesai' },
+                          running: { bg: 'bg-yellow-100 text-yellow-700', icon: <Loader2 size={12} className="animate-spin" />, text: 'Mengirim' },
+                          paused: { bg: 'bg-orange-100 text-orange-700', icon: <Clock size={12} />, text: 'Dijeda' },
+                          failed: { bg: 'bg-red-100 text-red-700', icon: <XCircle size={12} />, text: 'Gagal' },
+                          pending: { bg: 'bg-gray-100 text-gray-600', icon: <Clock size={12} />, text: 'Menunggu' },
                         }[job.status] || { bg: 'bg-gray-100 text-gray-600', icon: null, text: job.status };
 
                         const progress = job.total_recipients > 0 

@@ -16,6 +16,16 @@ interface UserSession {
   connectionMethod: 'qr' | 'pairing';
   pendingPhoneNumber: string | null;
   pairingCodeRequested: boolean;
+  isChatStoreReady: boolean;
+}
+
+interface SafeClientInfo {
+  wid?: {
+    user?: string;
+    _serialized?: string;
+  };
+  pushname?: string;
+  platform?: string;
 }
 
 class WhatsAppSessionManager extends EventEmitter {
@@ -37,11 +47,19 @@ class WhatsAppSessionManager extends EventEmitter {
         userId,
         connectionMethod: 'qr',
         pendingPhoneNumber: null,
-        pairingCodeRequested: false
+        pairingCodeRequested: false,
+        isChatStoreReady: false
       };
       this.sessions.set(userId, session);
     }
     return session;
+  }
+
+  private resetRuntimeState(session: UserSession): void {
+    session.clientInfo = null;
+    session.qrCodeData = null;
+    session.pairingCode = null;
+    session.isChatStoreReady = false;
   }
 
   getStatus(userId: string): ConnectionStatus {
@@ -54,6 +72,23 @@ class WhatsAppSessionManager extends EventEmitter {
 
   getClientInfo(userId: string): any {
     return this.getSession(userId).clientInfo;
+  }
+
+  private sanitizeClientInfo(clientInfo: any): SafeClientInfo | null {
+    if (!clientInfo) {
+      return null;
+    }
+
+    return {
+      wid: clientInfo.wid
+        ? {
+            user: clientInfo.wid.user,
+            _serialized: clientInfo.wid._serialized,
+          }
+        : undefined,
+      pushname: clientInfo.pushname,
+      platform: clientInfo.platform,
+    };
   }
 
   getPairingCode(userId: string): string | null {
@@ -70,16 +105,16 @@ class WhatsAppSessionManager extends EventEmitter {
 
     this.setStatus(userId, ConnectionStatus.CONNECTING);
     session.connectionMethod = method;
-    session.pairingCode = null;
     session.pendingPhoneNumber = phoneNumber || null;
     session.pairingCodeRequested = false;
+    this.resetRuntimeState(session);
 
     const sessionPath = path.join('./wa-session', userId);
     if (!fs.existsSync(sessionPath)) {
       fs.mkdirSync(sessionPath, { recursive: true });
     }
 
-    session.client = new Client({
+    const clientOptions: any = {
       authStrategy: new LocalAuth({
         clientId: userId,
         dataPath: './wa-session'
@@ -96,7 +131,17 @@ class WhatsAppSessionManager extends EventEmitter {
           '--disable-gpu'
         ]
       }
-    });
+    };
+
+    if (method === 'pairing' && phoneNumber) {
+      clientOptions.pairWithPhoneNumber = {
+        phoneNumber: phoneNumber.replace(/\D/g, '').replace(/^0/, '62'),
+        showNotification: true,
+        intervalMs: 180000
+      };
+    }
+
+    session.client = new Client(clientOptions);
 
     this.setupEventListeners(userId);
 
@@ -218,16 +263,9 @@ class WhatsAppSessionManager extends EventEmitter {
     session.client.on('qr', async (qr: string) => {
       console.log(`[${userId}] QR Code received`);
       
-      // If pairing mode and we have a pending phone number, request pairing code
-      if (session.connectionMethod === 'pairing' && session.pendingPhoneNumber && !session.pairingCodeRequested) {
-        session.pairingCodeRequested = true;
-        console.log(`[${userId}] Pairing mode - requesting pairing code for ${session.pendingPhoneNumber}...`);
-        try {
-          await this.requestPairingCode(userId, session.pendingPhoneNumber);
-        } catch (err: any) {
-          console.error(`[${userId}] Error requesting pairing code:`, err.message || err);
-        }
-        return; // Don't show QR code in pairing mode
+      // In pairing mode, whatsapp-web.js handles pairing code generation internally.
+      if (session.connectionMethod === 'pairing') {
+        return;
       }
       
       try {
@@ -242,8 +280,10 @@ class WhatsAppSessionManager extends EventEmitter {
     session.client.on('authenticated', () => {
       console.log(`[${userId}] WhatsApp authenticated`);
       session.qrCodeData = null;
+      session.isChatStoreReady = false;
       this.setStatus(userId, ConnectionStatus.AUTHENTICATED);
       this.emit('authenticated', userId);
+      void this.waitForReadyState(userId);
     });
 
     session.client.on('auth_failure', (msg: string) => {
@@ -254,14 +294,14 @@ class WhatsAppSessionManager extends EventEmitter {
 
     session.client.on('ready', () => {
       console.log(`[${userId}] WhatsApp client is ready`);
-      session.clientInfo = session.client?.info;
+      session.clientInfo = this.sanitizeClientInfo(session.client?.info);
       this.setStatus(userId, ConnectionStatus.READY);
-      this.emit('ready', userId, session.clientInfo);
+      void this.markChatStoreReady(userId, true);
     });
 
     session.client.on('disconnected', (reason: string) => {
       console.log(`[${userId}] WhatsApp disconnected:`, reason);
-      session.clientInfo = null;
+      this.resetRuntimeState(session);
       this.setStatus(userId, ConnectionStatus.DISCONNECTED);
       this.emit('disconnected', userId, reason);
     });
@@ -277,15 +317,400 @@ class WhatsAppSessionManager extends EventEmitter {
     this.emit('status_change', userId, status);
   }
 
-  async sendTextMessage(userId: string, phone: string, content: string): Promise<any> {
+  private async waitForReadyState(userId: string): Promise<void> {
+    const session = this.getSession(userId);
+    if (!session.client) return;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if (!session.client) return;
+      if (session.status === ConnectionStatus.READY || session.status === ConnectionStatus.DISCONNECTED) {
+        return;
+      }
+
+      try {
+        const state = await (session.client as any).getState?.();
+        const clientInfo = this.sanitizeClientInfo(session.client.info);
+
+        if (state === 'CONNECTED' || clientInfo?.wid?._serialized) {
+          console.log(`[${userId}] Ready state recovered via polling`);
+          session.clientInfo = clientInfo;
+          this.setStatus(userId, ConnectionStatus.READY);
+          await this.markChatStoreReady(userId);
+          return;
+        }
+      } catch {
+        // Ignore transient readiness probe failures
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    console.warn(`[${userId}] Authenticated but ready event did not arrive in time`);
+  }
+
+  private async markChatStoreReady(userId: string, fastTrack = false): Promise<void> {
+    const session = this.getSession(userId);
+    session.isChatStoreReady = false;
+
+    const attempts = fastTrack ? 5 : 8;
+    const delayMs = fastTrack ? 600 : 1200;
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (!session.client || session.status === ConnectionStatus.DISCONNECTED) {
+        return;
+      }
+
+      try {
+        const chats = await this.getChatsSafe(userId);
+        session.isChatStoreReady = true;
+        this.emit('ready', userId, session.clientInfo);
+        if (attempt > 0) {
+          console.log(`[${userId}] Chat store ready after ${attempt + 1} attempts`);
+        }
+        return;
+      } catch {
+        // Wait for WhatsApp Web store to finish warming up
+      }
+
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    console.warn(`[${userId}] Ready event received but chat store is still warming up`);
+  }
+
+  private async ensureSendReady(userId: string): Promise<InstanceType<typeof Client>> {
     const session = this.getSession(userId);
     if (!session.client || session.status !== ConnectionStatus.READY) {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chatId = this.formatPhoneNumber(phone);
-    const result = await session.client.sendMessage(chatId, content);
+    if (!session.isChatStoreReady) {
+      await this.markChatStoreReady(userId, true);
+    }
+
+    if (!session.isChatStoreReady) {
+      throw new Error('WhatsApp chat store is still warming up');
+    }
+
+    return session.client;
+  }
+
+  private async sendWithRetry<T>(
+    userId: string,
+    chatId: string,
+    execute: (client: InstanceType<typeof Client>) => Promise<T>
+  ): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const client = await this.ensureSendReady(userId);
+
+      try {
+        await this.prepareChatForSend(userId, client, chatId);
+        return await execute(client);
+      } catch (error: any) {
+        lastError = error;
+        const errorMsg = error?.message || '';
+
+        if (errorMsg.includes('No LID') || errorMsg.includes('not registered')) {
+          throw new Error('Number is not registered on WhatsApp');
+        }
+
+        const isTransientError =
+          errorMsg.includes('markedUnread') ||
+          errorMsg.includes('chat not ready') ||
+          errorMsg.includes('findChat') ||
+          errorMsg.includes('serialize') ||
+          errorMsg.includes('WidFactory') ||
+          errorMsg.includes('sendSeen') ||
+          errorMsg.includes('evaluation failed');
+
+        if (!isTransientError || attempt === 3) {
+          if (errorMsg.includes('chat not ready') || errorMsg.includes('findChat')) {
+            throw new Error('Unable to send message - chat not ready');
+          }
+          throw error;
+        }
+
+        const session = this.getSession(userId);
+        session.isChatStoreReady = false;
+        await new Promise(resolve => setTimeout(resolve, 1200 * (attempt + 1)));
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Unable to send message');
+  }
+
+  private async prepareChatForSend(
+    userId: string,
+    client: InstanceType<typeof Client>,
+    chatId: string
+  ): Promise<void> {
+    try {
+      await this.ensureChatExists(client, chatId);
+      await client.getChatById(chatId);
+      return;
+    } catch {
+      // Fall through to browser store warm-up
+    }
+
+    const page = (client as any)?.pupPage;
+    if (!page) {
+      return;
+    }
+
+    try {
+      await page.evaluate(async (id: string) => {
+        const store = (window as any).Store;
+        const chat = (window as any).WWebJS?.getChat
+          ? await (window as any).WWebJS.getChat(id)
+          : await store?.Chat?.find?.(id);
+
+        if (!chat) {
+          throw new Error('Chat not found in browser store');
+        }
+
+        return true;
+      }, chatId);
+    } catch (error) {
+      console.warn(`[${userId}] Browser chat warm-up failed for ${chatId}`);
+    }
+  }
+
+  private async sendMessageWithoutSeen(
+    userId: string,
+    client: InstanceType<typeof Client>,
+    chatId: string,
+    content: any,
+    options?: Record<string, unknown>
+  ): Promise<any> {
+    const sendOptions = {
+      ...(options ?? {}),
+      sendSeen: false,
+    };
+
+    console.log(`[${userId}] Primary send start for ${chatId} (sendSeen=false)`);
+
+    try {
+      const result = await (client as any).sendMessage(chatId, content, sendOptions);
+      console.log(`[${userId}] Primary send success for ${chatId}`);
+      return result;
+    } catch (error: any) {
+      console.warn(`[${userId}] Primary send failed for ${chatId}: ${error?.message || error}`);
+      throw error;
+    }
+  }
+
+  private async sendTextViaBrowserStore(userId: string, chatId: string, content: string): Promise<any> {
+    const session = this.getSession(userId);
+    const page = (session.client as any)?.pupPage;
+
+    if (!page) {
+      throw new Error('Browser page is not available for fallback send');
+    }
+
+    const result = await page.evaluate(async (payload: { chatId: string; content: string }) => {
+      const { chatId, content } = payload;
+      const w = window as any;
+      const Store = w.Store;
+      const WWebJS = w.WWebJS;
+
+      let chat = null;
+
+      try {
+        if (typeof WWebJS?.getChat === 'function') {
+          chat = await WWebJS.getChat(chatId);
+        }
+      } catch {
+        // Ignore and try Store fallback
+      }
+
+      if (!chat && typeof Store?.Chat?.find === 'function') {
+        chat = await Store.Chat.find(chatId);
+      }
+
+      if (!chat) {
+        throw new Error('Chat not found in browser store');
+      }
+
+      let sentResult: any = null;
+
+      if (typeof WWebJS?.sendMessage === 'function') {
+        try {
+          console.log(`[${userId}] Browser fallback try WWebJS.sendMessage for ${chatId}`);
+          sentResult = await WWebJS.sendMessage(chat, content, {});
+          if (sentResult) {
+            console.log(`[${userId}] Browser fallback success via WWebJS.sendMessage for ${chatId}`);
+          }
+        } catch {
+          sentResult = null;
+        }
+      }
+
+      if (!sentResult && typeof chat.sendMessage === 'function') {
+        try {
+          console.log(`[${userId}] Browser fallback try chat.sendMessage for ${chatId}`);
+          sentResult = await chat.sendMessage(content);
+          if (sentResult) {
+            console.log(`[${userId}] Browser fallback success via chat.sendMessage for ${chatId}`);
+          }
+        } catch {
+          sentResult = null;
+        }
+      }
+
+      if (!sentResult && typeof Store?.SendTextMsgToChat === 'function') {
+        try {
+          console.log(`[${userId}] Browser fallback try Store.SendTextMsgToChat for ${chatId}`);
+          sentResult = await Store.SendTextMsgToChat(chat, content);
+          if (sentResult) {
+            console.log(`[${userId}] Browser fallback success via Store.SendTextMsgToChat for ${chatId}`);
+          }
+        } catch {
+          sentResult = null;
+        }
+      }
+
+      if (!sentResult && typeof Store?.Cmd?.sendTextMsgToChat === 'function') {
+        try {
+          console.log(`[${userId}] Browser fallback try Store.Cmd.sendTextMsgToChat for ${chatId}`);
+          sentResult = await Store.Cmd.sendTextMsgToChat(chat, content);
+          if (sentResult) {
+            console.log(`[${userId}] Browser fallback success via Store.Cmd.sendTextMsgToChat for ${chatId}`);
+          }
+        } catch {
+          sentResult = null;
+        }
+      }
+
+      if (!sentResult) {
+        throw new Error('No browser-store text send method available');
+      }
+
+      const serializedId =
+        sentResult?.id?._serialized ||
+        sentResult?.id?.id ||
+        sentResult?.id ||
+        `${chatId}-${Date.now()}`;
+
+      return {
+        id: { _serialized: String(serializedId) },
+        timestamp: sentResult?.t || sentResult?.timestamp || Math.floor(Date.now() / 1000),
+        body: sentResult?.body || content,
+        from: sentResult?.from?._serialized || sentResult?.from || null,
+        to: sentResult?.to?._serialized || sentResult?.to || chatId,
+        _fallback: 'browser-store-text',
+      };
+    }, { chatId, content });
+
+    console.warn(`[${userId}] Text sent via browser store fallback for ${chatId}`);
     return result;
+  }
+
+  private async ensureChatExists(client: any, chatId: string): Promise<void> {
+    try {
+      // Try to get or create the chat
+      await client.pupPage?.evaluate((id: string) => {
+        return (window as any).WWebJS?.getChat(id);
+      }, chatId);
+    } catch (error) {
+      // If chat doesn't exist, this is fine - sendMessage will create it
+    }
+  }
+
+  private async resolvePhoneForSend(userId: string, phone: string): Promise<string> {
+    const cleaned = phone.replace(/\D/g, '');
+    const session = this.getSession(userId);
+    const client = session.client as any;
+
+    if (!client || !cleaned) {
+      return cleaned;
+    }
+
+    try {
+      const numberId = await client.getNumberId(cleaned);
+      const resolvedId = numberId?._serialized;
+      if (resolvedId) {
+        if (resolvedId !== cleaned && resolvedId !== `${cleaned}@c.us`) {
+          console.log(`[${userId}] Resolved send target ${cleaned} -> ${resolvedId} via getNumberId`);
+        }
+        return resolvedId;
+      }
+    } catch (error: any) {
+      console.warn(`[${userId}] getNumberId failed for ${cleaned}: ${error?.message || error}`);
+    }
+
+    if (typeof client.getContacts !== 'function' || typeof client.getContactLidAndPhone !== 'function') {
+      return cleaned;
+    }
+
+    try {
+      const contacts = await client.getContacts();
+      const matchedContact = contacts.find((contact: any) => {
+        const contactNumber = String(contact?.number || '').replace(/\D/g, '');
+        const contactUser = String(contact?.id?.user || '').replace(/\D/g, '');
+        const serializedId = String(contact?.id?._serialized || '');
+
+        return (
+          contactNumber === cleaned ||
+          contactUser === cleaned ||
+          serializedId === `${cleaned}@c.us` ||
+          serializedId === `${cleaned}@lid`
+        );
+      });
+
+      if (!matchedContact?.id?._serialized) {
+        return cleaned;
+      }
+
+      const mappings = await client.getContactLidAndPhone([matchedContact.id._serialized]);
+      const resolvedPhone = mappings?.[0]?.pn;
+      if (typeof resolvedPhone === 'string' && resolvedPhone.endsWith('@c.us')) {
+        if (resolvedPhone !== `${cleaned}@c.us`) {
+          console.log(`[${userId}] Resolved send target ${cleaned} -> ${resolvedPhone} via contact mapping ${matchedContact.id._serialized}`);
+        }
+        return resolvedPhone;
+      }
+    } catch (error: any) {
+      console.warn(`[${userId}] Contact mapping lookup failed for ${cleaned}: ${error?.message || error}`);
+    }
+
+    return cleaned;
+  }
+
+  async sendTextMessage(userId: string, phone: string, content: string): Promise<any> {
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
+
+    try {
+      return await this.sendWithRetry(userId, chatId, async client => {
+        try {
+          return await this.sendMessageWithoutSeen(userId, client, chatId, content);
+        } catch (error: any) {
+          if ((error.message || '').includes('markedUnread')) {
+            console.log(`[${userId}] Retrying send after markedUnread error`);
+          }
+          throw error;
+        }
+      });
+    } catch (error: any) {
+      const errorMsg = error?.message || '';
+      const shouldUseBrowserFallback =
+        errorMsg.includes('markedUnread') ||
+        errorMsg.includes('sendSeen') ||
+        errorMsg.includes('evaluation failed') ||
+        errorMsg.includes('chat not ready') ||
+        errorMsg.includes('findChat') ||
+        errorMsg.includes('serialize') ||
+        errorMsg.includes('WidFactory');
+
+      if (shouldUseBrowserFallback) {
+        console.warn(`[${userId}] sendMessage failed for ${chatId}, trying browser-store text fallback: ${errorMsg}`);
+        return await this.sendTextViaBrowserStore(userId, chatId, content);
+      }
+
+      throw error;
+    }
   }
 
   async sendMediaMessage(
@@ -295,14 +720,10 @@ class WhatsAppSessionManager extends EventEmitter {
     caption?: string,
     type: MessageType = MessageType.IMAGE
   ): Promise<any> {
-    const session = this.getSession(userId);
-    if (!session.client || session.status !== ConnectionStatus.READY) {
-      throw new Error('WhatsApp client is not ready');
-    }
-
-    const chatId = this.formatPhoneNumber(phone);
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
     const media = MessageMedia.fromFilePath(mediaPath);
-    
+
     const options: any = {};
     if (caption) {
       options.caption = caption;
@@ -311,8 +732,16 @@ class WhatsAppSessionManager extends EventEmitter {
       options.sendMediaAsDocument = true;
     }
 
-    const result = await session.client.sendMessage(chatId, media, options);
-    return result;
+    return await this.sendWithRetry(userId, chatId, async client => {
+      try {
+        return await this.sendMessageWithoutSeen(userId, client, chatId, media, options);
+      } catch (error: any) {
+        if ((error.message || '').includes('markedUnread')) {
+          console.log(`[${userId}] Retrying media send after markedUnread error`);
+        }
+        throw error;
+      }
+    });
   }
 
   async sendMediaFromUrl(
@@ -322,12 +751,8 @@ class WhatsAppSessionManager extends EventEmitter {
     caption?: string,
     type: MessageType = MessageType.IMAGE
   ): Promise<any> {
-    const session = this.getSession(userId);
-    if (!session.client || session.status !== ConnectionStatus.READY) {
-      throw new Error('WhatsApp client is not ready');
-    }
-
-    const chatId = this.formatPhoneNumber(phone);
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
     const media = await MessageMedia.fromUrl(url);
     
     const options: any = {};
@@ -338,8 +763,9 @@ class WhatsAppSessionManager extends EventEmitter {
       options.sendMediaAsDocument = true;
     }
 
-    const result = await session.client.sendMessage(chatId, media, options);
-    return result;
+    return await this.sendWithRetry(userId, chatId, async client =>
+      this.sendMessageWithoutSeen(userId, client, chatId, media, options)
+    );
   }
 
   async getContacts(userId: string): Promise<Contact[]> {
@@ -371,7 +797,7 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chats = await session.client.getChats();
+    const chats = await this.getChatsSafe(userId);
     const contactsMap = new Map<string, Contact>();
 
     for (const chat of chats) {
@@ -434,7 +860,72 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error('WhatsApp client is not ready');
     }
 
-    return await session.client.getChats();
+    return await this.getChatsSafe(userId);
+  }
+
+  private async getChatsSafe(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    if (!session.client) {
+      throw new Error('WhatsApp client is not initialized');
+    }
+
+    try {
+      return await session.client.getChats();
+    } catch (error) {
+      console.warn(`[${userId}] client.getChats() failed, trying browser store fallback`);
+      const fallbackChats = await this.getChatsFromBrowserStore(userId);
+      if (fallbackChats.length > 0) {
+        return fallbackChats;
+      }
+      throw error;
+    }
+  }
+
+  private async getChatsFromBrowserStore(userId: string): Promise<any[]> {
+    const session = this.getSession(userId);
+    const page = (session.client as any)?.pupPage;
+    if (!page) return [];
+
+    try {
+      const chats = await page.evaluate(() => {
+        const store = (window as any).Store;
+        const models =
+          store?.Chat?.getModelsArray?.() ||
+          Object.values(store?.Chat?._models || {});
+
+        return (models || []).map((chat: any) => ({
+          id: {
+            _serialized: chat?.id?._serialized || chat?.id || '',
+          },
+          name:
+            chat?.name ||
+            chat?.formattedTitle ||
+            chat?.contact?.name ||
+            chat?.contact?.pushname ||
+            'Unknown',
+          isGroup: !!chat?.isGroup,
+          isReadOnly: !!chat?.isReadOnly,
+          unreadCount: chat?.unreadCount || 0,
+          timestamp: chat?.timestamp || chat?.t || 0,
+          archived: !!(chat?.archived ?? chat?.archive),
+          pinned: !!(chat?.pinned ?? chat?.pin),
+          isMuted: !!chat?.isMuted,
+          muteExpiration: chat?.muteExpiration || 0,
+          lastMessage: chat?.lastMessage
+            ? {
+                body: chat.lastMessage.body || '',
+                timestamp: chat.lastMessage.timestamp || chat.lastMessage.t || 0,
+                fromMe: !!chat.lastMessage.fromMe,
+              }
+            : null,
+        }));
+      });
+
+      return Array.isArray(chats) ? chats.filter((chat: any) => chat?.id?._serialized) : [];
+    } catch (error) {
+      console.error(`[${userId}] Browser store fallback failed:`, (error as Error).message);
+      return [];
+    }
   }
 
   async checkNumberRegistered(userId: string, phone: string): Promise<boolean> {
@@ -443,12 +934,17 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chatId = this.formatPhoneNumber(phone);
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
     const result = await session.client.isRegisteredUser(chatId);
     return result;
   }
 
   private formatPhoneNumber(phone: string): string {
+    if (phone.includes('@')) {
+      return phone;
+    }
+
     let cleaned = phone.replace(/\D/g, '');
     
     if (cleaned.startsWith('0')) {
@@ -493,32 +989,40 @@ class WhatsAppSessionManager extends EventEmitter {
 
   // Send Poll
   async sendPoll(userId: string, phone: string, pollData: PollData): Promise<any> {
-    const session = this.getSession(userId);
-    if (!session.client || session.status !== ConnectionStatus.READY) {
-      throw new Error('WhatsApp client is not ready');
-    }
-
-    const chatId = this.formatPhoneNumber(phone);
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
     const poll = new Poll(pollData.question, pollData.options);
-    
-    const result = await session.client.sendMessage(chatId, poll);
-    return result;
+
+    return await this.sendWithRetry(userId, chatId, async client => {
+      try {
+        return await this.sendMessageWithoutSeen(userId, client, chatId, poll);
+      } catch (error: any) {
+        if ((error.message || '').includes('markedUnread')) {
+          console.log(`[${userId}] Retrying poll send after markedUnread error`);
+        }
+        throw error;
+      }
+    });
   }
 
   // Send Location
   async sendLocation(userId: string, phone: string, locationData: LocationData): Promise<any> {
-    const session = this.getSession(userId);
-    if (!session.client || session.status !== ConnectionStatus.READY) {
-      throw new Error('WhatsApp client is not ready');
-    }
-
-    const chatId = this.formatPhoneNumber(phone);
+    const resolvedPhone = await this.resolvePhoneForSend(userId, phone);
+    const chatId = this.formatPhoneNumber(resolvedPhone);
     const location = new Location(locationData.latitude, locationData.longitude, {
       name: locationData.description || ''
     });
-    
-    const result = await session.client.sendMessage(chatId, location);
-    return result;
+
+    return await this.sendWithRetry(userId, chatId, async client => {
+      try {
+        return await this.sendMessageWithoutSeen(userId, client, chatId, location);
+      } catch (error: any) {
+        if ((error.message || '').includes('markedUnread')) {
+          console.log(`[${userId}] Retrying location send after markedUnread error`);
+        }
+        throw error;
+      }
+    });
   }
 
   // Send to Group
@@ -569,7 +1073,7 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chats = await session.client.getChats();
+    const chats = await this.getChatsSafe(userId);
     const groups: WhatsAppGroup[] = [];
 
     for (const chat of chats) {
@@ -684,9 +1188,14 @@ class WhatsAppSessionManager extends EventEmitter {
 
     try {
       const contacts = await session.client.getContacts();
+      const phoneMap = await this.resolveContactPhoneNumbers(userId, contacts.map((contact: any) => contact.id._serialized));
+
       return contacts.map((contact: any) => ({
         id: contact.id._serialized,
-        number: contact.number || contact.id._serialized.replace('@c.us', '').replace('@g.us', ''),
+        number:
+          phoneMap.get(contact.id._serialized) ||
+          contact.number ||
+          contact.id._serialized.replace('@c.us', '').replace('@g.us', ''),
         name: contact.name,
         pushname: contact.pushname,
         shortName: contact.shortName,
@@ -705,13 +1214,49 @@ class WhatsAppSessionManager extends EventEmitter {
     }
   }
 
+  private async resolveContactPhoneNumbers(userId: string, contactIds: string[]): Promise<Map<string, string>> {
+    const session = this.getSession(userId);
+    const client = session.client as any;
+
+    if (!client || typeof client.getContactLidAndPhone !== 'function') {
+      return new Map();
+    }
+
+    const userContactIds = contactIds.filter(contactId => contactId.endsWith('@c.us') || contactId.endsWith('@lid'));
+    if (userContactIds.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const mappings = await client.getContactLidAndPhone(userContactIds);
+      const phoneMap = new Map<string, string>();
+
+      userContactIds.forEach((contactId: string, index: number) => {
+        const mapping = mappings?.[index];
+        const phoneId = mapping?.pn;
+        if (typeof phoneId === 'string' && phoneId.endsWith('@c.us')) {
+          phoneMap.set(contactId, phoneId.replace('@c.us', ''));
+        }
+      });
+
+      if (phoneMap.size > 0) {
+        console.log(`[${userId}] Resolved ${phoneMap.size} contact phone numbers via LID mapping`);
+      }
+
+      return phoneMap;
+    } catch (error: any) {
+      console.warn(`[${userId}] Failed to resolve contact phone numbers: ${error?.message || error}`);
+      return new Map();
+    }
+  }
+
   async getAllContactsFromChats(userId: string): Promise<any[]> {
     const session = this.getSession(userId);
     if (!session.client || session.status !== ConnectionStatus.READY) {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chats = await session.client.getChats();
+    const chats = await this.getChatsSafe(userId);
     const contactsList: any[] = [];
 
     for (const chat of chats) {
@@ -882,7 +1427,7 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error('WhatsApp client is not ready');
     }
 
-    const chats = await session.client.getChats();
+    const chats = await this.getChatsSafe(userId);
     return chats.map((chat: any) => ({
       id: chat.id._serialized,
       name: chat.name || chat.formattedTitle || 'Unknown',
@@ -949,6 +1494,10 @@ class WhatsAppSessionManager extends EventEmitter {
     const session = this.getSession(userId);
     if (!session.client || session.status !== ConnectionStatus.READY) {
       throw new Error('WhatsApp client is not ready');
+    }
+
+    if (!options || Object.keys(options).length === 0) {
+      return await this.sendTextMessage(userId, chatId, content);
     }
 
     const chat = await session.client.getChatById(chatId);
@@ -1143,7 +1692,8 @@ class WhatsAppSessionManager extends EventEmitter {
   }
 
   isReady(userId: string): boolean {
-    return this.getSession(userId).status === ConnectionStatus.READY;
+    const session = this.getSession(userId);
+    return session.status === ConnectionStatus.READY && session.isChatStoreReady;
   }
 
   hasActiveSession(userId: string): boolean {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Contact, Group } from '../types';
-import { Search, Plus, Filter, MoreVertical, Trash2, Upload, Users, FolderOpen, Check, X, Tag, UserPlus, AlertTriangle, RefreshCw, Loader2, Smartphone, Database, FileText } from 'lucide-react';
+import { Search, Plus, Trash2, Upload, Users, FolderOpen, Check, X, AlertTriangle, RefreshCw, Loader2, Smartphone, Database, FileText } from 'lucide-react';
 import { contactsApi, whatsappApi } from '../services/api';
 
 const ContactsView: React.FC = () => {
@@ -10,6 +10,7 @@ const ContactsView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [waConnected, setWaConnected] = useState(false);
+  const [waStatus, setWaStatus] = useState('DISCONNECTED');
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   
   // Pagination state
@@ -79,9 +80,11 @@ const ContactsView: React.FC = () => {
     const checkConnection = async () => {
       try {
         const status = await whatsappApi.getStatus();
+        setWaStatus(status.status);
         setWaConnected(status.status === 'READY');
       } catch {
         setWaConnected(false);
+        setWaStatus('DISCONNECTED');
       }
     };
     checkConnection();
@@ -107,9 +110,10 @@ const ContactsView: React.FC = () => {
           .filter(c => !c.isGroup && c.number)
           .map(c => ({
             name: c.name || c.pushname || c.number,
-            phone: c.number.startsWith('+') ? c.number : `+${c.number}`,
+            phone: c.number.replace(/\D/g, ''),
             tags: ['WhatsApp']
-          }));
+          }))
+          .filter(c => c.phone.length > 0);
         
         if (waContacts.length > 0) {
           // Import to database
@@ -191,13 +195,12 @@ const ContactsView: React.FC = () => {
     try {
       if (activeTab === 'contacts') {
         await contactsApi.deleteMany(ids);
-        setContacts(prev => prev.filter(c => !selectedItems.has(c.id)));
       } else {
         // Delete groups one by one (no bulk delete endpoint for groups)
         await Promise.all(ids.map((id: string) => contactsApi.deleteGroup(id)));
-        setGroups(prev => prev.filter(g => !selectedItems.has(g.id)));
       }
       setSyncMessage(`Deleted ${ids.length} items`);
+      await loadData();
     } catch (err: any) {
       setSyncMessage(`Delete failed: ${err.message}`);
     }
@@ -206,34 +209,9 @@ const ContactsView: React.FC = () => {
     setTimeout(() => setSyncMessage(null), 3000);
   };
 
-  const handleBulkTag = () => {
-      if (activeTab !== 'contacts') return;
-      const newTag = "Bulk Tag";
-      setContacts(prev => prev.map(c => {
-          if (selectedItems.has(c.id) && !c.tags.includes(newTag)) {
-              return { ...c, tags: [...c.tags, newTag] };
-          }
-          return c;
-      }));
-      setSelectedItems(new Set());
-      alert(`Added "${newTag}" to ${selectedItems.size} contacts.`);
-  };
-
-  const handleBulkAddToGroup = () => {
-      if (activeTab !== 'contacts') return;
-      // Simulating adding to first group
-      const targetGroup = groups[0];
-      if (!targetGroup) return;
-      
-      setGroups(prev => prev.map(g => {
-          if (g.id === targetGroup.id) {
-              const newIds = Array.from(selectedItems).filter(id => !g.contactIds.includes(id));
-              return { ...g, contactIds: [...g.contactIds, ...newIds] };
-          }
-          return g;
-      }));
-      setSelectedItems(new Set());
-      alert(`Added contacts to group "${targetGroup.name}".`);
+  const openSingleDelete = (id: string) => {
+    setSelectedItems(new Set([id]));
+    setShowDeleteModal(true);
   };
 
   // Add Contact Handler
@@ -364,13 +342,13 @@ const ContactsView: React.FC = () => {
     : filteredGroups.length > 0 && selectedItems.size === filteredGroups.length;
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto h-full flex flex-col relative">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto h-full flex flex-col relative pb-28 md:pb-8">
       
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 md:mb-8 gap-4">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Contacts</h1>
-          <p className="text-sm md:text-base text-gray-500 mt-1">Manage your audience and groups.</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Kontak</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Kelola audiens, grup, dan hasil sinkronisasi WhatsApp dengan lebih rapi.</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
             {activeTab === 'contacts' ? (
@@ -383,22 +361,22 @@ const ContactsView: React.FC = () => {
                                 ? 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50' 
                                 : 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
                         }`}
-                        title={waConnected ? 'Sync contacts from WhatsApp' : 'Connect WhatsApp first'}
+                         title={waConnected ? 'Sinkronkan kontak dari WhatsApp' : 'Hubungkan WhatsApp terlebih dahulu'}
                     >
                         {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-                        {isSyncing ? 'Syncing...' : 'Sync WA'}
+                         {isSyncing ? 'Menyinkronkan...' : 'Sinkron WA'}
                     </button>
                     <button 
                         onClick={() => setShowImportCSVModal(true)}
                         className="flex-1 md:flex-none justify-center bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-gray-50 transition-colors">
                         <Upload size={18} />
-                        Import CSV
+                        Impor CSV
                     </button>
                     <button 
                         onClick={() => setShowAddContactModal(true)}
                         className="flex-1 md:flex-none justify-center bg-emerald-900 text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-emerald-800 shadow-lg shadow-emerald-900/20 transition-colors">
                         <Plus size={18} />
-                        Add Contact
+                        Tambah Kontak
                     </button>
                 </>
             ) : (
@@ -406,7 +384,7 @@ const ContactsView: React.FC = () => {
                     onClick={() => setShowCreateGroupModal(true)}
                     className="flex-1 md:flex-none justify-center bg-emerald-900 text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-emerald-800 shadow-lg shadow-emerald-900/20 transition-colors">
                     <Plus size={18} />
-                    Create Group
+                    Buat Grup
                 </button>
             )}
         </div>
@@ -427,6 +405,13 @@ const ContactsView: React.FC = () => {
         </div>
       )}
 
+      {!waConnected && waStatus === 'AUTHENTICATED' && (
+        <div className="mb-4 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 bg-blue-50 text-blue-700 border border-blue-200">
+          <Loader2 size={16} className="animate-spin" />
+          WhatsApp sudah terautentikasi dan sedang menyelesaikan sinkronisasi. Tunggu beberapa saat lalu coba lagi.
+        </div>
+      )}
+
       {/* Main Content Card */}
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm flex-1 flex flex-col overflow-hidden relative z-0">
          
@@ -438,13 +423,13 @@ const ContactsView: React.FC = () => {
                     onClick={() => setActiveTab('contacts')}
                     className={`pb-4 font-medium text-sm md:text-base border-b-2 transition-colors ${activeTab === 'contacts' ? 'text-emerald-600 border-emerald-600' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
                  >
-                    All Contacts ({totalContacts})
+                     Semua Kontak ({totalContacts})
                  </button>
                  <button 
                     onClick={() => setActiveTab('groups')}
                     className={`pb-4 font-medium text-sm md:text-base border-b-2 transition-colors ${activeTab === 'groups' ? 'text-emerald-600 border-emerald-600' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
                  >
-                    Groups ({groups.length})
+                     Grup ({groups.length})
                  </button>
              </div>
 
@@ -454,28 +439,102 @@ const ContactsView: React.FC = () => {
                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
                      <input 
                         type="text" 
-                        placeholder={activeTab === 'contacts' ? "Search by name or phone..." : "Search group name..."}
+                         placeholder={activeTab === 'contacts' ? "Cari nama atau nomor..." : "Cari nama grup..."}
                         className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                         value={searchTerm}
                         onChange={(e) => handleSearchChange(e.target.value)}
                      />
                  </div>
-                 <div className="flex items-center gap-2 w-full md:w-auto">
-                     <button className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 transition-colors">
-                         <Filter size={18} />
-                         <span>Filter</span>
-                     </button>
-                 </div>
+                  <div className="flex items-center gap-2 w-full md:w-auto text-xs text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-2.5">
+                      <span>{activeTab === 'contacts' ? `${totalContacts} kontak tersimpan` : `${filteredGroups.length} grup tersedia`}</span>
+                  </div>
              </div>
          </div>
 
          {/* List Content */}
          <div className="flex-1 flex flex-col overflow-hidden">
            {activeTab === 'contacts' ? (
-             <>
-               <div className="flex-1 overflow-y-auto p-2">
-                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[700px]">
+              <>
+                <div className="flex-1 overflow-y-auto p-2">
+                  <div className="md:hidden space-y-3 p-2">
+                    <div className="flex items-center justify-between px-2 py-2 text-sm text-gray-500">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={isAllSelected}
+                          onChange={toggleAll}
+                          className="w-5 h-5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                        <span>Pilih semua kontak di halaman ini</span>
+                      </label>
+                      <span>{contacts.length} item</span>
+                    </div>
+
+                    {contacts.map(contact => {
+                      const isSelected = selectedItems.has(contact.id);
+                      return (
+                        <div key={contact.id} className={`rounded-2xl border p-4 shadow-sm transition-all ${isSelected ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' : 'border-gray-200 bg-white'}`}>
+                          <div className="flex items-start gap-3">
+                            <input 
+                              type="checkbox" 
+                              checked={isSelected}
+                              onChange={() => toggleSelection(contact.id)}
+                              className="mt-1 w-5 h-5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                            />
+
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0">
+                                    {contact.name.charAt(0)}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-gray-900 truncate">{contact.name}</p>
+                                    <p className="text-sm text-gray-500 font-mono truncate">{contact.phone}</p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  onClick={() => openSingleDelete(contact.id)}
+                                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors shrink-0"
+                                  title="Hapus kontak"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </div>
+
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {contact.tags.length > 0 ? contact.tags.map(tag => (
+                                  <span key={tag} className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
+                                    tag === 'VIP' ? 'bg-purple-100 text-purple-700' :
+                                    tag === 'Lead' ? 'bg-blue-100 text-blue-700' :
+                                    tag === 'Inactive' ? 'bg-gray-100 text-gray-500' :
+                                    'bg-emerald-100 text-emerald-700'
+                                  }`}>
+                                    {tag}
+                                  </span>
+                                )) : (
+                                  <span className="text-xs text-gray-400">Belum ada tag</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {contacts.length === 0 && !isLoading && (
+                      <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+                        <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
+                          <Users size={32} />
+                        </div>
+                        <p>Belum ada kontak yang cocok.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="hidden md:block overflow-x-auto">
+                     <table className="w-full min-w-[700px]">
                         <thead className="bg-gray-50 text-gray-500 text-sm uppercase tracking-wider sticky top-0 z-10">
                             <tr>
                                 <th className="px-6 py-4 text-left font-semibold rounded-l-xl w-16">
@@ -488,10 +547,10 @@ const ContactsView: React.FC = () => {
                                         />
                                     </div>
                                 </th>
-                                <th className="px-2 py-4 text-left font-semibold">Name</th>
-                                <th className="px-6 py-4 text-left font-semibold">Phone</th>
+                                <th className="px-2 py-4 text-left font-semibold">Nama</th>
+                                <th className="px-6 py-4 text-left font-semibold">Nomor</th>
                                 <th className="px-6 py-4 text-left font-semibold">Tags</th>
-                                <th className="px-6 py-4 text-right font-semibold rounded-r-xl">Actions</th>
+                                <th className="px-6 py-4 text-right font-semibold rounded-r-xl">Aksi</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
@@ -536,8 +595,12 @@ const ContactsView: React.FC = () => {
                                         </td>
                                         <td className="px-6 py-4 text-right">
                                             <div className="flex items-center justify-end gap-2 md:opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors">
-                                                    <MoreVertical size={18} />
+                                                <button
+                                                  onClick={() => openSingleDelete(contact.id)}
+                                                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                  title="Hapus kontak"
+                                                >
+                                                    <Trash2 size={18} />
                                                 </button>
                                             </div>
                                         </td>
@@ -551,32 +614,32 @@ const ContactsView: React.FC = () => {
                             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
                                 <Users size={32} />
                             </div>
-                            <p>No contacts found.</p>
+                            <p>Belum ada kontak yang cocok.</p>
                         </div>
                     )}
-                 </div>
-               </div>
+                  </div>
+                </div>
 
-               {/* Pagination Controls - Fixed at bottom */}
-               {totalPages > 1 && (
-                 <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-white">
-                   <div className="text-sm text-gray-500">
-                     Showing {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalContacts)} of {totalContacts} contacts
-                   </div>
-                   <div className="flex items-center gap-2">
-                     <button
-                       onClick={() => handlePageChange(1)}
-                       disabled={currentPage === 1}
+                {/* Pagination Controls - Fixed at bottom */}
+                {totalPages > 1 && (
+                  <div className="flex-shrink-0 flex flex-col md:flex-row md:items-center md:justify-between gap-4 px-4 md:px-6 py-4 border-t border-gray-100 bg-white">
+                    <div className="text-sm text-gray-500 text-center md:text-left">
+                      Menampilkan {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalContacts)} dari {totalContacts} kontak
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center md:justify-end gap-2">
+                      <button
+                        onClick={() => handlePageChange(1)}
+                        disabled={currentPage === 1}
                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                      >
-                       First
+                        Awal
                      </button>
                      <button
                        onClick={() => handlePageChange(currentPage - 1)}
                        disabled={currentPage === 1}
                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                      >
-                       Prev
+                        Sebelumnya
                      </button>
                      
                      <div className="flex items-center gap-1">
@@ -612,14 +675,14 @@ const ContactsView: React.FC = () => {
                        disabled={currentPage === totalPages}
                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                      >
-                       Next
+                        Berikutnya
                      </button>
                      <button
                        onClick={() => handlePageChange(totalPages)}
                        disabled={currentPage === totalPages}
                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                      >
-                       Last
+                        Akhir
                      </button>
                    </div>
                  </div>
@@ -628,7 +691,7 @@ const ContactsView: React.FC = () => {
            ) : (
              // Groups View
              <div className="flex-1 overflow-y-auto p-4">
-               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {/* Select All for Groups (Optional helper) */}
                     {filteredGroups.length > 0 && (
                          <div className="col-span-full flex items-center gap-2 mb-2 px-1">
@@ -639,7 +702,7 @@ const ContactsView: React.FC = () => {
                                 onChange={toggleAll}
                                 className="w-5 h-5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                             />
-                            <label htmlFor="selectAllGroups" className="text-sm font-medium text-gray-600 cursor-pointer">Select All Groups</label>
+                            <label htmlFor="selectAllGroups" className="text-sm font-medium text-gray-600 cursor-pointer">Pilih semua grup</label>
                          </div>
                     )}
 
@@ -666,8 +729,12 @@ const ContactsView: React.FC = () => {
                                     />
                                 </div>
                                 <div className="flex justify-end items-start mb-4 h-8">
-                                    <button className="p-2 text-gray-300 hover:text-gray-600 rounded-lg transition-colors">
-                                        <MoreVertical size={18} />
+                                    <button
+                                      onClick={() => openSingleDelete(group.id)}
+                                      className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                      title="Hapus grup"
+                                    >
+                                        <Trash2 size={18} />
                                     </button>
                                 </div>
                                 
@@ -676,20 +743,23 @@ const ContactsView: React.FC = () => {
                                         <FolderOpen size={24} />
                                     </div>
                                     <h3 className="font-bold text-gray-800 text-lg mb-1">{group.name}</h3>
-                                    <p className="text-gray-500 text-sm mb-6">{group.contactIds.length} Members</p>
+                                    <p className="text-gray-500 text-sm mb-6">{group.contactIds.length} anggota</p>
                                 </div>
                                 
-                                <div className="mt-auto flex items-center justify-between pt-4 border-t border-gray-100">
+                                <div className="mt-auto flex items-center justify-between gap-3 pt-4 border-t border-gray-100 flex-wrap">
                                     <div className="flex -space-x-2 overflow-hidden">
-                                        {group.contactIds.slice(0, 3).map((id, i) => (
-                                            <div key={i} className="inline-block h-8 w-8 rounded-full ring-2 ring-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
-                                                U{i+1}
+                                        {group.contactIds.slice(0, 3).map((contactId) => {
+                                            const groupContact = contacts.find(contact => contact.id === contactId);
+                                            const initials = (groupContact?.name || '?').charAt(0).toUpperCase();
+                                            return (
+                                            <div key={contactId} className="inline-block h-8 w-8 rounded-full ring-2 ring-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
+                                                {initials}
                                             </div>
-                                        ))}
+                                        );})}
                                     </div>
-                                    <button className="text-sm font-medium text-indigo-600 hover:text-indigo-700 hover:underline">
-                                        View Details
-                                    </button>
+                                    <div className="text-sm font-medium text-indigo-600 ml-auto sm:ml-0">
+                                        {group.contactIds.length} kontak terhubung
+                                    </div>
                                 </div>
                             </div>
                         );
@@ -700,7 +770,7 @@ const ContactsView: React.FC = () => {
                             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
                                 <FolderOpen size={32} />
                             </div>
-                            <p>No groups found.</p>
+                            <p>Belum ada grup yang cocok.</p>
                         </div>
                     )}
                </div>
@@ -711,38 +781,19 @@ const ContactsView: React.FC = () => {
 
       {/* Floating Bulk Action Bar */}
       {selectedItems.size > 0 && (
-        <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-6 z-20 animate-[slideUp_0.2s_ease-out]">
-            <div className="flex items-center gap-3 border-r border-gray-700 pr-6">
+        <div className="fixed bottom-24 md:bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-4 md:px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-4 md:gap-6 z-20 animate-[slideUp_0.2s_ease-out] w-[calc(100%-2rem)] md:w-auto max-w-md md:max-w-none justify-between">
+            <div className="flex items-center gap-3 md:border-r md:border-gray-700 md:pr-6">
                 <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center text-xs font-bold">
                     {selectedItems.size}
                 </div>
-                <span className="font-medium text-sm">Selected</span>
+                <span className="font-medium text-sm">Dipilih</span>
             </div>
             
             <div className="flex items-center gap-2">
-                {activeTab === 'contacts' && (
-                    <>
-                        <button 
-                            onClick={handleBulkAddToGroup}
-                            className="p-2 hover:bg-gray-800 rounded-xl transition-colors text-gray-300 hover:text-white flex flex-col items-center gap-1"
-                            title="Add to Group"
-                        >
-                            <UserPlus size={20} />
-                        </button>
-                        <button 
-                            onClick={handleBulkTag}
-                            className="p-2 hover:bg-gray-800 rounded-xl transition-colors text-gray-300 hover:text-white flex flex-col items-center gap-1"
-                            title="Assign Tag"
-                        >
-                            <Tag size={20} />
-                        </button>
-                        <div className="w-px h-6 bg-gray-700 mx-2"></div>
-                    </>
-                )}
                 <button 
                     onClick={() => setShowDeleteModal(true)}
                     className="p-2 hover:bg-red-900/50 rounded-xl transition-colors text-red-400 hover:text-red-300 flex flex-col items-center gap-1"
-                    title="Delete"
+                    title="Hapus"
                 >
                     <Trash2 size={20} />
                 </button>
@@ -765,22 +816,22 @@ const ContactsView: React.FC = () => {
                 <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600">
                     <AlertTriangle size={32} />
                 </div>
-                <h3 className="text-xl font-bold text-center text-gray-900 mb-2">Delete {selectedItems.size} Items?</h3>
+                <h3 className="text-xl font-bold text-center text-gray-900 mb-2">Hapus {selectedItems.size} item?</h3>
                 <p className="text-center text-gray-500 mb-8">
-                    Are you sure you want to delete the selected {activeTab === 'contacts' ? 'contacts' : 'groups'}? This action cannot be undone.
+                    Yakin ingin menghapus {activeTab === 'contacts' ? 'kontak' : 'grup'} yang dipilih? Tindakan ini tidak bisa dibatalkan.
                 </p>
                 <div className="flex gap-3">
                     <button 
                         onClick={() => setShowDeleteModal(false)}
                         className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors"
                     >
-                        Cancel
+                        Batal
                     </button>
                     <button 
                         onClick={handleBulkDelete}
                         className="flex-1 px-4 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 shadow-lg shadow-red-600/20 transition-colors"
                     >
-                        Delete
+                        Hapus
                     </button>
                 </div>
             </div>
@@ -793,7 +844,7 @@ const ContactsView: React.FC = () => {
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowAddContactModal(false)}></div>
             <div className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-md relative z-10 shadow-2xl animate-[scaleIn_0.2s_ease-out]">
                 <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-gray-900">Add New Contact</h3>
+                    <h3 className="text-xl font-bold text-gray-900">Tambah kontak baru</h3>
                     <button onClick={() => setShowAddContactModal(false)} className="p-2 hover:bg-gray-100 rounded-lg">
                         <X size={20} />
                     </button>
@@ -801,17 +852,17 @@ const ContactsView: React.FC = () => {
                 
                 <div className="space-y-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Nama *</label>
                         <input
                             type="text"
                             value={newContact.name}
                             onChange={(e) => setNewContact(prev => ({ ...prev, name: e.target.value }))}
                             className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                            placeholder="Contact name"
+                            placeholder="Nama kontak"
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number *</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Nomor telepon *</label>
                         <input
                             type="text"
                             value={newContact.phone}
@@ -821,7 +872,7 @@ const ContactsView: React.FC = () => {
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Tags (comma separated)</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Tag (pisahkan dengan koma)</label>
                         <input
                             type="text"
                             value={newContact.tags}
@@ -831,13 +882,13 @@ const ContactsView: React.FC = () => {
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Add to Group</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Masukkan ke grup</label>
                         <select
                             value={newContact.groupId}
                             onChange={(e) => setNewContact(prev => ({ ...prev, groupId: e.target.value }))}
                             className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
                         >
-                            <option value="">-- No Group --</option>
+                            <option value="">-- Tanpa grup --</option>
                             {groups.map(group => (
                                 <option key={group.id} value={group.id}>
                                     {group.name} ({group.contactIds.length} members)
@@ -852,7 +903,7 @@ const ContactsView: React.FC = () => {
                         onClick={() => setShowAddContactModal(false)}
                         className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors"
                     >
-                        Cancel
+                        Batal
                     </button>
                     <button 
                         onClick={handleAddContact}
@@ -860,7 +911,7 @@ const ContactsView: React.FC = () => {
                         className="flex-1 px-4 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                     >
                         {isSubmitting && <Loader2 size={18} className="animate-spin" />}
-                        Add Contact
+                        Tambah kontak
                     </button>
                 </div>
             </div>
@@ -873,7 +924,7 @@ const ContactsView: React.FC = () => {
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowImportCSVModal(false)}></div>
             <div className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-lg relative z-10 shadow-2xl animate-[scaleIn_0.2s_ease-out]">
                 <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-gray-900">Import Contacts from CSV</h3>
+                    <h3 className="text-xl font-bold text-gray-900">Impor kontak dari CSV</h3>
                     <button onClick={() => { setShowImportCSVModal(false); setCsvData([]); }} className="p-2 hover:bg-gray-100 rounded-lg">
                         <X size={20} />
                     </button>
@@ -893,14 +944,14 @@ const ContactsView: React.FC = () => {
                             <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mx-auto mb-3">
                                 <FileText size={24} />
                             </div>
-                            <p className="text-gray-700 font-medium">Click to upload CSV file</p>
-                            <p className="text-gray-400 text-sm mt-1">Format: name, phone, tags (semicolon separated)</p>
+                            <p className="text-gray-700 font-medium">Klik untuk upload file CSV</p>
+                            <p className="text-gray-400 text-sm mt-1">Format: name, phone, tags (dipisahkan titik koma)</p>
                         </label>
                     </div>
 
                     {csvData.length > 0 && (
                         <div className="bg-gray-50 rounded-xl p-4">
-                            <p className="font-medium text-gray-700 mb-2">Preview ({csvData.length} contacts)</p>
+                            <p className="font-medium text-gray-700 mb-2">Preview ({csvData.length} kontak)</p>
                             <div className="max-h-48 overflow-y-auto space-y-2">
                                 {csvData.slice(0, 5).map((c, i) => (
                                     <div key={i} className="flex items-center justify-between text-sm bg-white p-2 rounded-lg">
@@ -909,7 +960,7 @@ const ContactsView: React.FC = () => {
                                     </div>
                                 ))}
                                 {csvData.length > 5 && (
-                                    <p className="text-gray-400 text-sm text-center">...and {csvData.length - 5} more</p>
+                                    <p className="text-gray-400 text-sm text-center">...dan {csvData.length - 5} lainnya</p>
                                 )}
                             </div>
                         </div>
@@ -921,7 +972,7 @@ const ContactsView: React.FC = () => {
                         onClick={() => { setShowImportCSVModal(false); setCsvData([]); }}
                         className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors"
                     >
-                        Cancel
+                        Batal
                     </button>
                     <button 
                         onClick={handleImportCSV}
@@ -942,7 +993,7 @@ const ContactsView: React.FC = () => {
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowCreateGroupModal(false)}></div>
             <div className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-md relative z-10 shadow-2xl animate-[scaleIn_0.2s_ease-out]">
                 <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-gray-900">Create New Group</h3>
+                    <h3 className="text-xl font-bold text-gray-900">Buat grup baru</h3>
                     <button onClick={() => setShowCreateGroupModal(false)} className="p-2 hover:bg-gray-100 rounded-lg">
                         <X size={20} />
                     </button>
@@ -950,23 +1001,23 @@ const ContactsView: React.FC = () => {
                 
                 <div className="space-y-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Group Name *</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Nama grup *</label>
                         <input
                             type="text"
                             value={newGroup.name}
                             onChange={(e) => setNewGroup(prev => ({ ...prev, name: e.target.value }))}
                             className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                            placeholder="Enter group name"
+                            placeholder="Masukkan nama grup"
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Deskripsi</label>
                         <textarea
                             value={newGroup.description}
                             onChange={(e) => setNewGroup(prev => ({ ...prev, description: e.target.value }))}
                             className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none"
                             rows={3}
-                            placeholder="Group description (optional)"
+                            placeholder="Deskripsi grup (opsional)"
                         />
                     </div>
                 </div>
@@ -976,7 +1027,7 @@ const ContactsView: React.FC = () => {
                         onClick={() => setShowCreateGroupModal(false)}
                         className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors"
                     >
-                        Cancel
+                        Batal
                     </button>
                     <button 
                         onClick={handleCreateGroup}
@@ -984,7 +1035,7 @@ const ContactsView: React.FC = () => {
                         className="flex-1 px-4 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                     >
                         {isSubmitting && <Loader2 size={18} className="animate-spin" />}
-                        Create Group
+                        Buat grup
                     </button>
                 </div>
             </div>

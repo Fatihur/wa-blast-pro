@@ -376,13 +376,19 @@ router.delete('/groups/:id', async (req: Request, res: Response) => {
 
 // Add contacts to group
 router.post('/groups/:id/contacts', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
   try {
     const { contactIds } = req.body;
     if (!Array.isArray(contactIds)) {
       return res.status(400).json({ success: false, error: 'contactIds array required' });
     }
-    
-    const added = await groupRepository.addContacts(req.params.id, contactIds);
+
+    const belongsToUser = await groupRepository.belongsToUser(req.params.id, userId);
+    if (!belongsToUser) {
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+
+    const added = await groupRepository.addContacts(req.params.id, contactIds, userId);
     res.json({ success: true, added });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -391,8 +397,15 @@ router.post('/groups/:id/contacts', async (req: Request, res: Response) => {
 
 // Remove contact from group
 router.delete('/groups/:groupId/contacts/:contactId', async (req: Request, res: Response) => {
+  const userId = (req as any).user.userId;
   try {
     const { groupId, contactId } = req.params;
+
+    const belongsToUser = await groupRepository.belongsToUser(groupId, userId);
+    if (!belongsToUser) {
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+
     const removed = await groupRepository.removeContact(groupId, contactId);
     res.json({ success: removed });
   } catch (error: any) {

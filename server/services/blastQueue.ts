@@ -19,6 +19,30 @@ class BlastQueueService extends EventEmitter {
     super();
   }
 
+  private isTransientSessionError(errorMsg: string): boolean {
+    const normalized = errorMsg.toLowerCase();
+    return [
+      'not ready',
+      'warming up',
+      'markedunread',
+      'findchat',
+      'serialize',
+      'widfactory'
+    ].some(keyword => normalized.includes(keyword));
+  }
+
+  private async waitForSessionRecovery(userId: string, attempts = 4, delayMs = 1500): Promise<boolean> {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (whatsappSessionManager.isReady(userId)) {
+        return true;
+      }
+
+      await this.sleep(delayMs, null);
+    }
+
+    return whatsappSessionManager.isReady(userId);
+  }
+
   private getUserState(userId: string): UserJobState {
     let state = this.userStates.get(userId);
     if (!state) {
@@ -143,20 +167,25 @@ class BlastQueueService extends EventEmitter {
       }
 
       // Check WhatsApp connection before each send
-      if (!whatsappSessionManager.isReady(userId)) {
-        console.log(`[${userId}] WhatsApp disconnected, pausing job ${job.id}`);
-        job.status = 'paused';
-        this.emit('job_paused', userId, job);
-        
-        // Update database
-        try {
-          await blastRepository.updateJobStatus(job.id, 'paused');
-        } catch (err) {
-          console.error('Failed to update job status:', err);
+        if (!whatsappSessionManager.isReady(userId)) {
+          const recovered = await this.waitForSessionRecovery(userId);
+          if (recovered) {
+            console.log(`[${userId}] WhatsApp session recovered before sending recipient ${i + 1}`);
+          } else {
+            console.log(`[${userId}] WhatsApp disconnected, pausing job ${job.id}`);
+            job.status = 'paused';
+            this.emit('job_paused', userId, job);
+            
+            // Update database
+            try {
+              await blastRepository.updateJobStatus(job.id, 'paused');
+            } catch (err) {
+              console.error('Failed to update job status:', err);
+            }
+            
+            break;
+          }
         }
-        
-        break;
-      }
 
       const recipient = recipients[i];
       job.progress.current = i;
@@ -199,26 +228,57 @@ class BlastQueueService extends EventEmitter {
         result.status = 'failed';
         result.error = error.message || 'Unknown error';
         job.progress.failed++;
-        
-        // Only log non-findChat errors (findChat = invalid/unregistered number, expected)
+
+        // Categorize errors for better logging
         const errorMsg = error.message || '';
-        if (!errorMsg.includes('findChat')) {
-          console.error(`[${userId}] Send failed ${recipient.phone}: ${errorMsg.substring(0, 60)}`);
+
+        // Silent errors (expected failures)
+        const silentErrors = [
+          'findChat',
+          'not registered',
+          'Number is not registered on WhatsApp',
+          'Invalid WhatsApp number',
+          'number not found',
+          'markedUnread',
+          'No LID',
+          'Unable to verify number'
+        ];
+        const isSilentError = silentErrors.some(err => errorMsg.toLowerCase().includes(err.toLowerCase()));
+
+        if (!isSilentError) {
+          console.error(`[${userId}] Send failed ${recipient.phone}: ${errorMsg.substring(0, 100)}`);
         }
-        
+
         // Check if error is session related - pause job
-        if (error.message?.includes('Session closed') || error.message?.includes('not ready')) {
-          console.log(`[${userId}] Session error detected, pausing job ${job.id}`);
+        if (errorMsg.includes('Session closed')) {
+          console.log(`[${userId}] Session closed, pausing job ${job.id}`);
           job.status = 'paused';
           this.emit('job_paused', userId, job);
-          
+
           try {
             await blastRepository.updateJobStatus(job.id, 'paused');
           } catch (err) {
             console.error('Failed to update job status:', err);
           }
-          
+
           break;
+        }
+
+        if (this.isTransientSessionError(errorMsg)) {
+          const recovered = await this.waitForSessionRecovery(userId);
+          if (!recovered) {
+            console.log(`[${userId}] Session warm-up timed out, pausing job ${job.id}`);
+            job.status = 'paused';
+            this.emit('job_paused', userId, job);
+
+            try {
+              await blastRepository.updateJobStatus(job.id, 'paused');
+            } catch (err) {
+              console.error('Failed to update job status:', err);
+            }
+
+            break;
+          }
         }
       }
 

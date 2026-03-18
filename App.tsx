@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
+import BottomNav from './components/BottomNav';
 import Header from './components/Header';
 import DashboardView from './components/DashboardView';
 import ContactsView from './components/ContactsView';
@@ -24,8 +25,8 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [authView, setAuthView] = useState<AuthView>('login');
+  const [authError, setAuthError] = useState('');
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [contactCount, setContactCount] = useState<number>(0);
 
   useEffect(() => {
@@ -41,6 +42,18 @@ const App: React.FC = () => {
     }
   }, [isLoggedIn]);
 
+  useEffect(() => {
+    const handleAuthError = () => {
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('rememberToken');
+      setIsLoggedIn(false);
+      setAuthView('login');
+    };
+
+    socketService.on('auth_error', handleAuthError);
+    return () => socketService.off('auth_error', handleAuthError);
+  }, []);
+
   const loadContactCount = async () => {
     try {
       const result = await contactsApi.getAll();
@@ -54,6 +67,28 @@ const App: React.FC = () => {
 
   const checkAuth = async () => {
     try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const oauthToken = searchParams.get('authToken');
+      const oauthRememberToken = searchParams.get('rememberToken');
+      const oauthError = searchParams.get('authError');
+
+      if (oauthToken) {
+        localStorage.setItem('authToken', oauthToken);
+        if (oauthRememberToken) {
+          localStorage.setItem('rememberToken', oauthRememberToken);
+        }
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setAuthError('');
+        setIsLoggedIn(true);
+        setIsCheckingAuth(false);
+        return;
+      }
+
+      if (oauthError) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setAuthError(oauthError);
+      }
+
       const token = localStorage.getItem('authToken');
       const rememberToken = localStorage.getItem('rememberToken');
 
@@ -74,6 +109,7 @@ const App: React.FC = () => {
             if (result.rememberToken) {
               localStorage.setItem('rememberToken', result.rememberToken);
             }
+            setAuthError('');
             setIsLoggedIn(true);
             setIsCheckingAuth(false);
             return;
@@ -98,6 +134,7 @@ const App: React.FC = () => {
     if (rememberToken) {
       localStorage.setItem('rememberToken', rememberToken);
     }
+    setAuthError('');
     setIsLoggedIn(true);
   };
 
@@ -146,6 +183,7 @@ const App: React.FC = () => {
             onLogin={handleLogin}
             onSwitchToRegister={() => setAuthView('register')}
             onForgotPassword={() => setAuthView('forgot-password')}
+            initialError={authError}
           />
         );
     }
@@ -153,7 +191,6 @@ const App: React.FC = () => {
 
   const handleViewChange = (view: ViewState) => {
     setCurrentView(view);
-    setIsMobileMenuOpen(false);
     // Refresh contact count when navigating away from contacts view
     if (currentView === 'contacts' || view === 'contacts') {
       loadContactCount();
@@ -163,7 +200,7 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (currentView) {
       case 'dashboard':
-        return <DashboardView />;
+        return <DashboardView onChangeView={handleViewChange} />;
       case 'contacts':
         return <ContactsView />;
       case 'blast':
@@ -187,42 +224,26 @@ const App: React.FC = () => {
 
   return (
     <div className="flex min-h-screen bg-[#F3F5F7]">
-      {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden">
-          <div
-            className="fixed inset-0 bg-black/50 transition-opacity backdrop-blur-sm"
-            onClick={() => setIsMobileMenuOpen(false)}
-          ></div>
-          <div className="relative flex-1 flex flex-col max-w-[260px] w-full bg-white h-full shadow-2xl animate-[slideIn_0.3s_ease-out]">
-            <Sidebar
-              currentView={currentView}
-              onChangeView={handleViewChange}
-              onLogout={handleLogout}
-              onClose={() => setIsMobileMenuOpen(false)}
-              className="w-full border-none"
-              contactCount={contactCount}
-            />
-          </div>
-        </div>
-      )}
-
       <div className="hidden md:block sticky top-0 h-screen w-64 shrink-0">
         <Sidebar
           currentView={currentView}
-          onChangeView={setCurrentView}
+          onChangeView={handleViewChange}
           onLogout={handleLogout}
           contactCount={contactCount}
         />
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0 h-screen">
+      <div className="flex-1 flex min-h-screen flex-col min-w-0">
         <Header 
-          onMenuClick={() => setIsMobileMenuOpen(true)} 
+          onMenuClick={() => {}} 
           onLogout={handleLogout}
           onChangeView={handleViewChange}
+          currentView={currentView}
         />
-        <main className="flex-1 overflow-y-auto relative">{renderContent()}</main>
+        <main className="flex-1 overflow-y-auto relative pb-24 md:pb-0">{renderContent()}</main>
       </div>
+
+      <BottomNav currentView={currentView} onChangeView={handleViewChange} contactCount={contactCount} onLogout={handleLogout} />
 
       <style>{`
         @keyframes slideIn {

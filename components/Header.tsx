@@ -2,14 +2,28 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Search, Bell, Mail, Command, Menu, Settings, LogOut, ChevronDown, X, Clock, Users, FileText, Check, CheckCheck, Trash2 } from 'lucide-react';
 import { ViewState } from '../types';
 import { authApi, AuthUser, headerApi, SearchResult, Notification, InboxMessage } from '../services/api';
+import { socketService } from '../services/socket';
 
 interface HeaderProps {
   onMenuClick: () => void;
   onLogout: () => void;
   onChangeView: (view: ViewState) => void;
+  currentView: ViewState;
 }
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView }) => {
+const mobileTitles: Record<ViewState, string> = {
+  dashboard: 'Ringkasan',
+  contacts: 'Kontak',
+  blast: 'Blast',
+  connection: 'Perangkat',
+  history: 'Riwayat',
+  settings: 'Pengaturan',
+  files: 'File',
+  scheduled: 'Terjadwal',
+  chat: 'Chat',
+};
+
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView, currentView }) => {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
@@ -78,6 +92,45 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView }) 
       fetchInbox();
     }, 30000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    socketService.connect();
+
+    const refreshNotifications = () => {
+      fetchNotifications();
+    };
+
+    const handleInboxMessage = (message: Partial<InboxMessage>) => {
+      const incoming: InboxMessage = {
+        id: message.id || `rt-${Date.now()}`,
+        from_phone: message.from_phone || '',
+        from_name: message.from_name || message.from_phone || 'Unknown',
+        message_type: message.message_type || 'TEXT',
+        content: message.content || '',
+        is_read: false,
+        received_at: new Date().toISOString(),
+      };
+
+      setInboxMessages(prev => [incoming, ...prev].slice(0, 20));
+      setInboxUnreadCount(prev => prev + 1);
+    };
+
+    socketService.on('blast_job_created', refreshNotifications);
+    socketService.on('blast_job_started', refreshNotifications);
+    socketService.on('blast_job_completed', refreshNotifications);
+    socketService.on('blast_job_failed', refreshNotifications);
+    socketService.on('whatsapp_disconnected', refreshNotifications);
+    socketService.on('new_inbox_message', handleInboxMessage);
+
+    return () => {
+      socketService.off('blast_job_created', refreshNotifications);
+      socketService.off('blast_job_started', refreshNotifications);
+      socketService.off('blast_job_completed', refreshNotifications);
+      socketService.off('blast_job_failed', refreshNotifications);
+      socketService.off('whatsapp_disconnected', refreshNotifications);
+      socketService.off('new_inbox_message', handleInboxMessage);
+    };
   }, []);
 
   const fetchNotifications = async () => {
@@ -242,10 +295,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView }) 
         {/* Mobile Menu Button */}
         <button 
           onClick={onMenuClick}
-          className="p-2 hover:bg-gray-100 rounded-xl text-gray-600 md:hidden"
+          className="hidden p-2 hover:bg-gray-100 rounded-xl text-gray-600 md:hidden"
         >
           <Menu size={24} />
         </button>
+
+        <div className="md:hidden">
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-400">WA Blast</p>
+          <h1 className="text-lg font-bold text-gray-900">{mobileTitles[currentView]}</h1>
+        </div>
 
         {/* Search Bar */}
         <div className="relative hidden md:block" ref={searchRef}>
@@ -508,7 +566,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView }) 
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 <Settings size={18} />
-                <span className="text-sm font-medium">Settings</span>
+                <span className="text-sm font-medium">Pengaturan</span>
               </button>
               <div className="h-px bg-gray-100 my-1"></div>
               <button
@@ -519,7 +577,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onChangeView }) 
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-red-500 hover:bg-red-50 transition-colors"
               >
                 <LogOut size={18} />
-                <span className="text-sm font-medium">Logout</span>
+                <span className="text-sm font-medium">Keluar</span>
               </button>
             </div>
           )}

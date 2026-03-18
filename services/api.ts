@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:3001/api';
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '/api';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -8,6 +8,25 @@ export interface ApiResponse<T = any> {
 
 function getAuthToken(): string | null {
   return localStorage.getItem('authToken');
+}
+
+async function parseResponseBody(response: Response): Promise<any> {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const text = await response.text();
+    return text ? { raw: text } : null;
+  } catch {
+    return null;
+  }
 }
 
 async function request<T>(
@@ -34,13 +53,36 @@ async function request<T>(
     headers,
   });
 
-  const data = await response.json();
+  const data = await parseResponseBody(response);
   
   if (!response.ok) {
-    throw new Error(data.error || 'Request failed');
+    throw new Error(data?.error || data?.message || data?.raw || `Request failed (${response.status})`);
   }
   
-  return data;
+  return data as T;
+}
+
+async function requestFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  const headers: Record<string, string> = {};
+  const token = getAuthToken();
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+
+  const data = await parseResponseBody(response);
+  if (!response.ok) {
+    throw new Error(data?.error || data?.message || data?.raw || `Request failed (${response.status})`);
+  }
+
+  return data as T;
 }
 
 export interface AuthUser {
@@ -125,6 +167,12 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     }),
+
+  getGoogleLoginUrl: (rememberMe: boolean = true) => {
+    const url = new URL(`${window.location.origin}${API_BASE}/auth/google`);
+    url.searchParams.set('rememberMe', rememberMe ? 'true' : 'false');
+    return url.toString();
+  },
 };
 
 export const settingsApi = {
@@ -151,6 +199,51 @@ export const settingsApi = {
       method: 'DELETE',
     }),
 };
+
+export interface AppSettings {
+  defaultDelayMs: number;
+  workingHoursStart: string;
+  workingHoursEnd: string;
+  maxDailyMessages: number;
+  geminiApiKey: string;
+}
+
+export const filesApi = {
+  getAll: () =>
+    request<{
+      success: boolean;
+      count: number;
+      files: import('../types').StoredFile[];
+    }>('/files'),
+
+  uploadMany: (files: File[]) => {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+
+    return requestFormData<{
+      success: boolean;
+      uploaded: number;
+      files: import('../types').StoredFile[];
+    }>('/files/upload', formData);
+  },
+
+  delete: (fileId: string) =>
+    request<{ success: boolean; deleted: boolean }>(`/files/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+    }),
+};
+
+export function normalizeSettings(settings: Record<string, string> = {}): AppSettings {
+  return {
+    defaultDelayMs:
+      parseInt(settings.default_delay_ms || settings.defaultDelay || '3000', 10) || 3000,
+    workingHoursStart: settings.working_hours_start || settings.workingHoursStart || '08:00',
+    workingHoursEnd: settings.working_hours_end || settings.workingHoursEnd || '20:00',
+    maxDailyMessages:
+      parseInt(settings.max_daily_messages || settings.maxDailyMessages || '1000', 10) || 1000,
+    geminiApiKey: settings.geminiApiKey || '',
+  };
+}
 
 export const whatsappApi = {
   getStatus: () => request<{
@@ -489,7 +582,7 @@ export const blastApi = {
       headers,
       body: formData,
     });
-    return response.json();
+    return parseResponseBody(response);
   },
   
   start: (jobId: string) => 
@@ -554,7 +647,7 @@ export const blastApi = {
       headers,
       body: formData,
     });
-    return response.json();
+    return parseResponseBody(response);
   },
 
   cancelScheduled: (jobId: string) =>

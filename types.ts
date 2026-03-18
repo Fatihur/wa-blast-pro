@@ -33,6 +33,16 @@ export interface Contact {
   tags: string[];
 }
 
+export interface StoredFile {
+  id: string;
+  name: string;
+  size: string;
+  bytes: number;
+  type: 'pdf' | 'image' | 'doc' | 'other';
+  date: string;
+  url: string;
+}
+
 export interface Group {
   id: string;
   name: string;
